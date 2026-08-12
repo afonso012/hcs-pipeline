@@ -62,6 +62,9 @@ packages = ["hcs"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# O ruff 0.16 formata blocos ```python dentro de Markdown. As especificações são
+# documentos de desenho: o código nelas é ilustrativo e a formatação é deliberada.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
