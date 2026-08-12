@@ -1,0 +1,25 @@
+# Traefik dynamic configuration: one route, into the API.
+#
+# The single server entry is the *service name*, not a container name. Docker's embedded
+# DNS returns every replica's address for `api`, so this one line spreads connections
+# across however many replicas API_REPLICAS asks for — no container names to keep in sync
+# with the scale, and no socket to read them from.
+#
+# Balancing happens per connection rather than per request, because Go keeps connections
+# alive. Good enough for Phase 1, where the point is that the API has no published port
+# and Traefik is the only way in. If per-request balance ever matters to a measurement,
+# Phase 4 is where it gets revisited.
+
+http:
+  routers:
+    api:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      service: api
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://api:8000
+        passHostHeader: true

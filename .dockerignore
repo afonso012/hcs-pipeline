@@ -1,0 +1,20 @@
+# The build context is sent to the daemon in full before anything runs. .venv alone is
+# close to a gigabyte and gets rebuilt inside the image anyway.
+.venv/
+.git/
+.github/
+data/
+mlruns/
+htmlcov/
+.coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+*.tif
+*.svs
+docs/
+*.md

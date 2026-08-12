@@ -1,0 +1,26 @@
+# Traefik static configuration.
+#
+# The file provider, not the docker provider. The docker provider needs the host's Docker
+# socket mounted into the container, which (a) hands that container the ability to
+# enumerate and control everything running on the machine, and (b) does not work at all
+# on this host, where Docker Desktop's "allow the default Docker socket to be used"
+# setting is off. Reading the routes from a file costs one small file and removes both
+# problems.
+
+entryPoints:
+  web:
+    address: ":80"
+
+api:
+  dashboard: true
+  insecure: true # dashboard on :8080 with no auth — local development only
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+accessLog: {}
+
+log:
+  level: INFO

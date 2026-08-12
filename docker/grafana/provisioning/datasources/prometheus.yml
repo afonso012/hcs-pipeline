@@ -1,0 +1,11 @@
+# Provisioned so Grafana comes up already connected. A dashboard that needs someone to
+# click through a setup wizard first is a dashboard nobody opens twice.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

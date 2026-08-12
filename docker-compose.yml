@@ -1,0 +1,262 @@
+# The stack of spec §15.
+#
+# The full set of services does not fit in the Docker Desktop budget at once, and does not
+# need to — hence the profiles. `core` is daily development; `obs` adds telemetry for
+# Phases 4-5; `science` adds MLflow for Phase 6; `full` is benchmark and demonstration.
+#
+# **Memory limits are the mechanism of the test, not decoration.** If chunked reading is
+# wrong, the worker dies with OOMKill and exit 137, and that is the point: a test that
+# cannot fail proves nothing. Every limit is an environment variable so the benchmark can
+# move it without editing this file.
+#
+# Host ports are variables for the same reason. The defaults avoid 80, 3000, 5000, 5432
+# and 6379, which are already taken on this machine.
+
+x-postgres-url: &postgres-url
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+x-storage-env: &storage-env
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  BUCKET_RAW: ${BUCKET_RAW:-raw}
+  BUCKET_RESULTS: ${BUCKET_RESULTS:-results}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    profiles: [core, obs, science, full]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, on first initialisation of the volume: creates the mlflow database.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY:-512m}
+
+  redis:
+    image: redis:7-alpine
+    profiles: [core, obs, science, full]
+    # noeviction, not the default: silently dropping queued tasks to stay under maxmemory
+    # would lose work units and make every progress counter lie.
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --appendonly no
+      --save ""
+    ports:
+      - "${REDIS_HOST_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY:-640m}
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: [core, obs, science, full]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    deploy:
+      resources:
+        limits:
+          memory: ${MINIO_MEMORY:-768m}
+
+  # Creates the buckets and exits. Everything that needs object storage waits for this to
+  # succeed, so /readyz never reports "bucket does not exist" as a startup blip.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    profiles: [core, obs, science, full]
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      BUCKET_RAW: ${BUCKET_RAW:-raw}
+      BUCKET_RESULTS: ${BUCKET_RESULTS:-results}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+        echo 'waiting for minio'; sleep 1;
+      done;
+      mc mb --ignore-existing local/$$BUCKET_RAW local/$$BUCKET_RESULTS;
+      echo 'buckets ready';
+      "
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    profiles: [core, obs, science, full]
+    environment:
+      <<: [*postgres-url, *storage-env]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    # No published port: Traefik is the only way in, which is what makes running two
+    # replicas meaningful rather than a port conflict.
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+      resources:
+        limits:
+          memory: ${API_MEMORY:-512m}
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    profiles: [core, obs, science, full]
+    environment:
+      <<: [*postgres-url, *storage-env]
+      CHUNK_SIZE: ${CHUNK_SIZE:-1024}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-32}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      # Two workers at 1.5 GB in development. The v3 figure of 4x2 GB was written without
+      # looking at any particular machine. Benchmark raises it and measures where it
+      # breaks.
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          memory: ${WORKER_MEMORY:-1536m}
+
+  traefik:
+    image: traefik:v3.3
+    profiles: [core, obs, science, full]
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${TRAEFIK_DASHBOARD_PORT:-8081}:8080"
+    volumes:
+      # Routes come from files, not from the Docker socket. See traefik.yml for why.
+      - ./docker/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./docker/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: ${TRAEFIK_MEMORY:-128m}
+
+  # --- obs profile (Phases 4-5) --------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: [obs, full]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    deploy:
+      resources:
+        limits:
+          memory: ${PROMETHEUS_MEMORY:-512m}
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    profiles: [obs, full]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    deploy:
+      resources:
+        limits:
+          memory: ${GRAFANA_MEMORY:-256m}
+
+  flower:
+    image: mher/flower:2.0
+    profiles: [obs, full]
+    command: celery --broker=redis://redis:6379/0 flower --port=5555
+    depends_on:
+      redis: {condition: service_healthy}
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    deploy:
+      resources:
+        limits:
+          memory: ${FLOWER_MEMORY:-256m}
+
+  # --- science profile (Phase 6) -------------------------------------------------------
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.21.0
+    profiles: [science, full]
+    command: >
+      /bin/sh -c "
+      pip install --no-cache-dir psycopg2-binary boto3 >/dev/null &&
+      mlflow server
+        --host 0.0.0.0 --port 5000
+        --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+        --default-artifact-root s3://${BUCKET_RESULTS:-results}/mlflow
+      "
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    ports:
+      - "${MLFLOW_PORT:-5001}:5000"
+    deploy:
+      resources:
+        limits:
+          memory: ${MLFLOW_MEMORY:-512m}
+
+volumes:
+  postgres-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

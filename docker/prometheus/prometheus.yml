@@ -1,0 +1,21 @@
+# Scrape configuration for the obs profile (spec §14.1).
+#
+# The API runs as N replicas behind one service name. A static target would resolve once
+# and scrape whichever replica answered first, so half the request metrics would silently
+# vanish. Docker's embedded DNS returns every replica's address for the service name,
+# which is what dns_sd_configs consumes.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  - job_name: api
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 8000
