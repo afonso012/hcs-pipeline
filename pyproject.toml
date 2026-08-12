@@ -76,8 +76,17 @@ warn_unreachable = true
 
 # O stack de imagem científica não traz stubs.
 [[tool.mypy.overrides]]
-module = ["bioio.*", "openslide.*", "skimage.*", "dask.*", "pycytominer.*", "s3fs.*"]
+module = [
+    "bioio.*", "openslide.*", "skimage.*", "dask.*", "pycytominer.*", "s3fs.*",
+    "celery.*", "boto3.*", "botocore.*",
+]
 ignore_missing_imports = true
+
+# Celery's @task decorator is untyped, so strict mode calls every task it wraps
+# untyped too. Narrowed to the worker package rather than relaxed globally.
+[[tool.mypy.overrides]]
+module = ["hcs.worker.*"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
