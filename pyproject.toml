@@ -1,0 +1,89 @@
+[project]
+name = "hcs-pipeline"
+version = "0.1.0"
+description = "Pipeline distribuído para análise de imagem de high-content screening"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+    "s3fs>=2024.10",
+    "boto3>=1.35",
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "pyarrow>=18.0",
+    "prometheus-fastapi-instrumentator>=7.0",
+]
+
+[project.optional-dependencies]
+# Fase 2+. Separado para o contentor da API não arrastar o stack de imagem.
+imaging = [
+    "dask[array]>=2024.10",
+    "bioio>=1.1",
+    "bioio-ome-tiff>=1.0",
+    "tifffile>=2024.9",
+    "openslide-python>=1.4",
+    "scikit-image>=0.24",
+    "scipy>=1.14",
+]
+# Fase 6.
+science = [
+    "pycytominer>=1.1",
+    "scikit-learn>=1.5",
+    "streamlit>=1.40",
+    "plotly>=5.24",
+    "mlflow>=2.17",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.115",
+    "testcontainers[postgres,redis]>=4.8",
+    "httpx>=0.27",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "locust>=2.32",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hcs"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+
+# O stack de imagem científica não traz stubs.
+[[tool.mypy.overrides]]
+module = ["bioio.*", "openslide.*", "skimage.*", "dask.*", "pycytominer.*", "s3fs.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exatidão contra ground truth, corre em nightly",
+    "integration: precisa de testcontainers",
+]
+
+[tool.coverage.run]
+source = ["hcs"]
+# Notebooks de exploração e scripts de tuning ficam fora da métrica (spec §13.6).
+omit = ["scripts/*"]
