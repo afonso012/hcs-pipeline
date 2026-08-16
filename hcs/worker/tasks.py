@@ -53,6 +53,16 @@ def session_scope() -> Iterator[Session]:
         yield session
 
 
+def perform(work_unit_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """Do the actual work for one unit. Phase 1 does none.
+
+    A named seam rather than an inline `pass`, for two reasons: it says exactly where
+    Phase 2 plugs the chunked read, the segmentation and the Parquet write in, and it
+    gives the failure-semantics tests something to make raise. Without it, the
+    PERMANENT/TRANSIENT split of §16.3 would be a claim with no way to check it.
+    """
+
+
 @celery_app.task(
     bind=True,
     name="hcs.process_unit",
@@ -77,10 +87,7 @@ def process_unit(self: Any, work_unit_id: str, run_id: str) -> str:
             return UnitStatus.DONE.value
 
     try:
-        # Phase 2 replaces this line with the chunked read, the segmentation and the
-        # Parquet write. Everything around it — the claim, the counters, the run closing
-        # — is what Phase 1 is proving works.
-        pass
+        perform(unit, run)
     except SoftTimeLimitExceeded:
         _fail(unit, run, "soft time limit exceeded", permanent=False)
         raise

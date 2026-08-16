@@ -1,0 +1,115 @@
+# Continuous integration (spec §15).
+#
+# The repository is private and the CI runs anyway. A pipeline whose numbers drift
+# silently is the failure mode this whole project exists to avoid, and the cheapest guard
+# against it is a build that goes red on its own.
+#
+# The spec sketches `pytest tests/unit tests/property tests/integration` as directories.
+# This repository selects by marker instead — the same split, expressed where the tests
+# already declare it, with no chance of a file landing in a directory no job runs.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A superseded push has nothing left to tell anyone.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.10.11" # the version baked into both images
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      # --frozen fails if uv.lock is stale rather than resolving anew. Without it,
+      # `lockfile_hash` in the run lineage (§12) would record a file nobody installed.
+      - run: uv sync --frozen --extra dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy hcs migrations
+
+      # ignore-unfixed because a HIGH with no available patch is information, not a
+      # decision: blocking every build on it would train everyone to ignore this job.
+      - name: Vulnerabilities
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - run: uv sync --frozen --extra dev
+
+      # Unit and property tests first: they need nothing, they are fast, and a failure
+      # here should not be waiting behind a container pull.
+      - name: Unit and property tests
+        run: uv run pytest -m "not integration" -q
+
+      # testcontainers starts its own PostgreSQL; the runner already has a Docker daemon.
+      # These are the tests that assert anything about §6, and mocking the database would
+      # hide exactly the bugs they exist to catch (§13.3).
+      - name: Integration tests
+        run: uv run pytest -m integration -q
+
+      - name: Coverage
+        run: uv run pytest -q --cov --cov-report=term-missing --cov-fail-under=80
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Building both images is the only check that the Dockerfiles still work. The API
+      # image deliberately omits the imaging stack (§4), so a stray `import skimage` in
+      # API code breaks here and nowhere else.
+      - name: Build the API image
+        run: docker build -f docker/api.Dockerfile -t hcs-api:ci .
+
+      - name: Build the worker image
+        run: docker build -f docker/worker.Dockerfile -t hcs-worker:ci .
+
+      # The digest baked at build time is what a run records as its lockfile_hash. If it
+      # is missing, every submit raises rather than recording a lineage it does not have
+      # — better to find that here than at submit time.
+      - name: The lockfile digest is baked into both images
+        run: |
+          for image in hcs-api:ci hcs-worker:ci; do
+            digest=$(docker run --rm --entrypoint cat "$image" /app/lockfile.sha256)
+            echo "$image -> $digest"
+            [ ${#digest} -eq 64 ] || { echo "not a sha256"; exit 1; }
+          done
