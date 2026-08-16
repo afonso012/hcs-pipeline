@@ -36,6 +36,27 @@ FAKE_ENV = {
 }
 
 
+def test_the_worker_modules_import_with_no_environment_at_all(tmp_path: Path) -> None:
+    """Importing must not read configuration.
+
+    `Celery(broker=get_settings().redis_url)` evaluates the environment while the module
+    is still being imported. That makes the task module unimportable without a full set
+    of variables, and pytest collects every test file before running any of them — so a
+    developer with a local .env sees a green suite and CI, which has none, cannot even
+    collect. Found exactly that way.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", "import hcs.worker.tasks, hcs.api.main; print('ok')"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
 def test_importing_the_celery_app_alone_registers_the_task(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-c", PROBE],

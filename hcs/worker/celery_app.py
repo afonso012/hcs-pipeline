@@ -13,17 +13,32 @@ task that is still running and two workers process the same unit, wasting twice 
 compute and racing to write the same Parquet path.
 """
 
+from typing import Any
+
 from celery import Celery
 
 from hcs.config import get_settings
-
-settings = get_settings()
 
 TASK_TIME_LIMIT_SECONDS = 1800  # hard kill
 TASK_SOFT_TIME_LIMIT_SECONDS = 1500  # catchable, leaves room to clean up
 VISIBILITY_TIMEOUT_SECONDS = 3600  # > TASK_TIME_LIMIT_SECONDS, see the module docstring
 
-celery_app = Celery("hcs", broker=settings.redis_url)
+celery_app = Celery("hcs")
+
+
+def _runtime_config() -> dict[str, Any]:
+    """Settings read on first use, never at import.
+
+    `Celery(broker=get_settings().redis_url)` would evaluate the environment while the
+    module is being imported, which makes this module — and therefore the task module,
+    and therefore the whole test suite's collection — unimportable without a full set of
+    variables. `add_defaults` takes a callable for exactly this reason.
+    """
+    return {"broker_url": get_settings().redis_url}
+
+
+celery_app.add_defaults(_runtime_config)
+
 celery_app.conf.update(
     # The worker starts as `celery -A hcs.worker.celery_app`, which imports this module
     # and nothing else. Without this line the task module is never loaded on the worker

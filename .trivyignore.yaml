@@ -1,0 +1,20 @@
+# Findings deliberately not blocking the build, each with a reason and an expiry.
+#
+# `expired_at` is the point of using the YAML form: an ignore with no end date is a
+# finding that has been forgotten rather than accepted. Once the date passes the entry
+# stops applying and CI goes red again, which is the intended behaviour.
+
+vulnerabilities:
+  - id: CVE-2026-69247
+    paths:
+      - uv.lock
+    statement: |
+      cryptography 49.0.0, reachable only as a transitive dependency of mlflow, which
+      lives in the `science` extra. Neither shipped image installs it: the API image
+      takes the core dependencies only, and the worker image adds `imaging`. The
+      vulnerable code is in the lockfile and in nothing that runs.
+
+      Not pinned up, because forcing cryptography>=50.0.0 makes the resolver walk mlflow
+      backwards and drag pyarrow from 25 to 21 — downgrading two packages the pipeline
+      does use, to patch one it does not run. Revisit when mlflow's tree moves.
+    expired_at: 2026-11-16

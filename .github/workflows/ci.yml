@@ -53,6 +53,8 @@ jobs:
 
       # ignore-unfixed because a HIGH with no available patch is information, not a
       # decision: blocking every build on it would train everyone to ignore this job.
+      # Anything deliberately accepted goes in .trivyignore.yaml with a reason and an
+      # expiry date, so an accepted finding cannot quietly become a forgotten one.
       - name: Vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -60,6 +62,7 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
 
   test:
