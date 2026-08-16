@@ -26,6 +26,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.11 /uv /bin/uv
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --extra imaging
+# The digest of what was actually resolved, baked so hcs.lineage can record it
+# without the lockfile being present at runtime (a lockfile in the image is a
+# lockfile that can disagree with what was installed).
+RUN sha256sum uv.lock | cut -d' ' -f1 > /app/lockfile.sha256
 
 FROM base AS runtime
 RUN apt-get update \
@@ -35,6 +39,7 @@ RUN groupadd --gid 10001 hcs \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin hcs
 
 COPY --from=deps /app/.venv /app/.venv
+COPY --from=deps /app/lockfile.sha256 /app/lockfile.sha256
 ENV PATH="/app/.venv/bin:${PATH}"
 
 # Dask writes spill files here, owned by the runtime user so the container does not need

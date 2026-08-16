@@ -25,6 +25,12 @@ VISIBILITY_TIMEOUT_SECONDS = 3600  # > TASK_TIME_LIMIT_SECONDS, see the module d
 
 celery_app = Celery("hcs", broker=settings.redis_url)
 celery_app.conf.update(
+    # The worker starts as `celery -A hcs.worker.celery_app`, which imports this module
+    # and nothing else. Without this line the task module is never loaded on the worker
+    # side, so every published task comes back as "Received unregistered task" while the
+    # API reports 202 and the run sits at QUEUED forever. Eager-mode tests cannot catch
+    # it, because they import the task directly.
+    imports=("hcs.worker.tasks",),
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,

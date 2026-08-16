@@ -24,6 +24,7 @@ from redis import Redis
 from sqlalchemy import Engine, create_engine, text
 
 from hcs import __version__
+from hcs.api import batches
 from hcs.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="HCS pipeline", version=__version__, lifespan=lifespan)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+app.include_router(batches.router)
 
 
 @app.get("/healthz", status_code=status.HTTP_200_OK)

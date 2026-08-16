@@ -1,0 +1,83 @@
+"""Request and response bodies for §7.1.
+
+Validation here is the system boundary. Everything past this module may assume a well
+formed digest, a non-negative field index and a channel map that is not empty — which is
+why `hcs.identity` can afford to raise instead of guess.
+"""
+
+import uuid
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from hcs.db import BatchStatus, UnitKind
+
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")]
+
+
+class BatchCreate(BaseModel):
+    external_ref: str | None = Field(
+        default=None, max_length=200, description="Caller's own name for this batch"
+    )
+
+
+class BatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    batch_id: uuid.UUID
+    status: BatchStatus
+    total_units: int
+    external_ref: str | None
+
+
+class PlateIn(BaseModel):
+    """A plate is reference data: registering it twice is registering it once (§6.2)."""
+
+    barcode: str = Field(min_length=1, max_length=100, examples=["Week1_22141"])
+    n_rows: int = Field(gt=0, le=64)
+    n_cols: int = Field(gt=0, le=64)
+
+
+class ChannelFileIn(BaseModel):
+    uri: str = Field(min_length=1, examples=["s3://raw/Week1_22141_B04_s1_w1.tif"])
+    sha256: Sha256
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
+class HcsFieldIn(BaseModel):
+    """One imaging field: the N channel files that share (plate, well, field_index).
+
+    The channel *names* are the map's keys and come from the source CSV, which has
+    `Image_FileName_DAPI`, `_Tubulin` and `_Actin` as columns of its own. Nothing in this
+    codebase translates `w1`, `w2` or `w4` into a channel name — that mapping was deleted
+    rather than fixed (§7.1).
+    """
+
+    well: str = Field(min_length=1, max_length=8, examples=["B04"])
+    field_index: int = Field(ge=0, le=32767)
+    channels: dict[str, ChannelFileIn] = Field(min_length=1)
+
+
+class ManifestIn(BaseModel):
+    kind: Literal[UnitKind.HCS_FIELD]
+    plate: PlateIn
+    # Not in the v4 text, and here is why it is here: without a declared expected set,
+    # "a unit missing a channel" has nothing to be missing *from*, and the `incomplete`
+    # counter the spec promises can never be anything but zero. Inferring the set from
+    # the manifest — the modal channel set, say — would rebuild exactly the kind of
+    # implicit convention §7.1 deleted.
+    required_channels: list[str] = Field(min_length=1, examples=[["DAPI", "Tubulin", "Actin"]])
+    units: list[HcsFieldIn] = Field(min_length=1, max_length=5000)
+
+
+class ManifestOut(BaseModel):
+    units_registered: int
+    duplicates_skipped: int
+    incomplete: int
+
+
+class SubmitOut(BaseModel):
+    run_id: uuid.UUID
+    total_units: int

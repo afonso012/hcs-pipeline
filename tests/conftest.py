@@ -9,12 +9,13 @@ anything about §6 run against the same major version the compose stack runs.
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from docker.errors import DockerException
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 from testcontainers.postgres import PostgresContainer
 
@@ -76,6 +77,60 @@ def session(migrated_engine: Engine) -> Iterator[Session]:
     finally:
         transaction.rollback()
         connection.close()
+
+
+@pytest.fixture
+def clean_db(migrated_engine: Engine) -> Iterator[Engine]:
+    """For tests that must commit, because a second connection has to see their writes.
+
+    The rollback trick in `session` cannot be used when the code under test opens its own
+    connection — an eagerly executed Celery task does exactly that, and would find an
+    empty database. Truncating afterwards is the honest alternative: `batches` and
+    `plates` cascade to everything else in §6.
+    """
+    yield migrated_engine
+    with migrated_engine.begin() as connection:
+        connection.execute(text("TRUNCATE batches, plates, api_keys CASCADE"))
+
+
+@pytest.fixture
+def api_client(
+    clean_db: Engine, postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Any]:
+    """The real app, wired to the test database, with tasks running inline.
+
+    `task_always_eager` turns `.delay()` into a direct call, so one HTTP request exercises
+    the whole Phase 1 path — manifest, run, worker, marked unit — without a broker. It is
+    not a substitute for the chaos test of §13.4, which needs real workers to kill.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DATABASE_URL", postgres_url)
+    # Never dialled: these tests do not touch /readyz, and both clients are lazy.
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("S3_ACCESS_KEY", "test")
+    monkeypatch.setenv("S3_SECRET_KEY", "test")
+
+    from hcs.config import get_settings
+    from hcs.worker import tasks
+    from hcs.worker.celery_app import celery_app
+
+    get_settings.cache_clear()
+    tasks._engine.cache_clear()
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
+
+    from hcs.api.main import app
+
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        celery_app.conf.task_always_eager = False
+        celery_app.conf.task_eager_propagates = False
+        tasks._engine.cache_clear()
+        get_settings.cache_clear()
 
 
 @pytest.fixture
