@@ -11,8 +11,19 @@ import pytest
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
-from hcs.db import Batch, BatchStatus, HcsField, Run, RunStatus, UnitRun, UnitStatus, WorkUnit
+from hcs.db import (
+    Batch,
+    BatchStatus,
+    HcsField,
+    Run,
+    RunStatus,
+    UnitRun,
+    UnitStatus,
+    WellLayout,
+    WorkUnit,
+)
 from hcs.identity import hcs_field_id
+from hcs.science.controls import ControlType
 
 pytestmark = pytest.mark.integration
 
@@ -32,7 +43,11 @@ def field(well: str, index: int, channels: tuple[str, ...] = CHANNELS) -> dict[s
     }
 
 
-def manifest(*units: dict[str, Any], barcode: str = BARCODE) -> dict[str, Any]:
+def manifest(
+    *units: dict[str, Any],
+    barcode: str = BARCODE,
+    wells: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "kind": "HCS_FIELD",
         "plate": {
@@ -40,6 +55,7 @@ def manifest(*units: dict[str, Any], barcode: str = BARCODE) -> dict[str, Any]:
             "n_rows": 8,
             "n_cols": 12,
             "expected_channels": list(CHANNELS),
+            "wells": wells or [],
         },
         "units": list(units),
     }
@@ -217,6 +233,122 @@ class TestPlateIsReferenceData:
         assert (
             api_client.post(f"/v1/batches/{batch_id}/manifest", json=reordered).status_code == 202
         )
+
+
+class TestWellLayout:
+    """The layout enters through the manifest, and the server decides what is a control.
+
+    This is where §9.1 is enforced rather than merely obeyed. The seed script computes
+    nothing about controls; it sends the `(compound, concentration)` pairs it read from
+    the CSV, and the rule is applied once, here.
+    """
+
+    @staticmethod
+    def layout_of(engine: Engine) -> dict[str, tuple[str | None, str | None]]:
+        with Session(engine) as session:
+            rows = session.execute(
+                select(WellLayout.well, WellLayout.compound, WellLayout.control_type)
+            ).all()
+        return {well: (compound, control) for well, compound, control in rows}
+
+    def test_the_control_type_is_derived_from_the_pair_not_the_compound(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """Taxol at 0.3 uM is the positive control; taxol at 3.0 uM is a dose point.
+
+        Both wells name the same compound, and only one comes back marked.
+        """
+        batch_id = create_batch(api_client)
+        wells = [
+            {"well": "B02", "compound": "DMSO", "concentration": 0.0},
+            {"well": "B03", "compound": "taxol", "concentration": 0.3},
+            {"well": "B04", "compound": "taxol", "concentration": 3.0},
+        ]
+
+        api_client.post(
+            f"/v1/batches/{batch_id}/manifest", json=manifest(field("B02", 1), wells=wells)
+        )
+
+        assert self.layout_of(clean_db) == {
+            "B02": ("DMSO", ControlType.NEGATIVE),
+            "B03": ("taxol", ControlType.POSITIVE),
+            "B04": ("taxol", None),
+        }
+
+    def test_a_client_cannot_declare_a_well_to_be_a_control(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """`control_type` is not part of the request body, so a client that sends one is
+        sending a field the schema does not have. The derived value stands."""
+        batch_id = create_batch(api_client)
+        wells = [
+            {
+                "well": "B04",
+                "compound": "taxol",
+                "concentration": 3.0,
+                "control_type": "POSITIVE",
+            }
+        ]
+
+        api_client.post(
+            f"/v1/batches/{batch_id}/manifest", json=manifest(field("B04", 1), wells=wells)
+        )
+
+        assert self.layout_of(clean_db) == {"B04": ("taxol", None)}
+
+    def test_the_layout_is_recorded_even_when_every_field_is_incomplete(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """The layout describes the plate, not the submission. A manifest that registers
+        no units still told us what is in the wells."""
+        batch_id = create_batch(api_client)
+        wells = [{"well": "B02", "compound": "DMSO", "concentration": 0.0}]
+
+        response = api_client.post(
+            f"/v1/batches/{batch_id}/manifest",
+            json=manifest(field("B02", 1, channels=("DAPI",)), wells=wells),
+        )
+
+        assert response.json() == {
+            "units_registered": 0,
+            "duplicates_skipped": 0,
+            "incomplete": 1,
+        }
+        assert self.layout_of(clean_db) == {"B02": ("DMSO", ControlType.NEGATIVE)}
+
+    def test_resending_a_corrected_layout_replaces_the_wells_it_names(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """Unlike `expected_channels`, a layout correction is a correction: it changes
+        what analysis still to come will see, not the meaning of units already accepted."""
+        batch_id = create_batch(api_client)
+        unit = field("B02", 1)
+        api_client.post(
+            f"/v1/batches/{batch_id}/manifest",
+            json=manifest(unit, wells=[{"well": "B02", "compound": "taxol"}]),
+        )
+
+        api_client.post(
+            f"/v1/batches/{batch_id}/manifest",
+            json=manifest(unit, wells=[{"well": "B02", "compound": "DMSO", "concentration": 0.0}]),
+        )
+
+        assert self.layout_of(clean_db) == {"B02": ("DMSO", ControlType.NEGATIVE)}
+
+    def test_a_manifest_without_a_layout_leaves_the_table_alone(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """Most manifests carry only images, and must not erase a layout seeded earlier."""
+        batch_id = create_batch(api_client)
+        unit = field("B02", 1)
+        api_client.post(
+            f"/v1/batches/{batch_id}/manifest",
+            json=manifest(unit, wells=[{"well": "B02", "compound": "DMSO", "concentration": 0.0}]),
+        )
+
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(unit))
+
+        assert self.layout_of(clean_db) == {"B02": ("DMSO", ControlType.NEGATIVE)}
 
 
 class TestSubmit:

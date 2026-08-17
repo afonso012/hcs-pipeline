@@ -24,9 +24,19 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from hcs.api.schemas import HcsFieldIn, ManifestIn, PlateIn
-from hcs.db import Batch, BatchUnit, HcsChannelFile, HcsField, Plate, UnitKind, WorkUnit
+from hcs.api.schemas import HcsFieldIn, ManifestIn, PlateIn, WellLayoutIn
+from hcs.db import (
+    Batch,
+    BatchUnit,
+    HcsChannelFile,
+    HcsField,
+    Plate,
+    UnitKind,
+    WellLayout,
+    WorkUnit,
+)
 from hcs.identity import hcs_field_id
+from hcs.science.controls import control_type
 
 
 class PlateMismatchError(ValueError):
@@ -45,6 +55,10 @@ def register_hcs_manifest(
 ) -> ManifestOutcome:
     """Register the fields of one plate into a batch. The caller commits."""
     plate_id, expected = _upsert_plate(session, manifest.plate)
+    # Before the early return below: the layout describes the plate, not the submission,
+    # and a manifest whose every field turned out to be incomplete still told us what is
+    # in the wells.
+    _upsert_well_layout(session, plate_id, manifest.plate.wells)
 
     # A field missing a channel is rejected whole (§5): the DNA channel finds the nuclei
     # and the others are measured *inside* that mask, so two channels out of three do not
@@ -111,6 +125,46 @@ def _upsert_plate(session: Session, plate: PlateIn) -> tuple[uuid.UUID, list[str
             f"{plate.n_rows}x{plate.n_cols} with {declared[2]}"
         )
     return plate_id, list(expected)
+
+
+def _upsert_well_layout(
+    session: Session, plate_id: uuid.UUID, wells: Sequence[WellLayoutIn]
+) -> None:
+    """Record what each named well contains, deciding `control_type` here.
+
+    The derivation is server-side on purpose (§9.1). The request carries the pair and
+    nothing else, so the rule that taxol is the positive control at 0.3 uM and an ordinary
+    dose point at the other seven concentrations is applied in one place, by one function,
+    for every client that will ever exist.
+
+    Unnamed wells are untouched. A named well is overwritten, including with NULLs: the
+    manifest states the layout of the wells it lists, and a correction that could not
+    clear a wrong compound would not be a correction.
+    """
+    if not wells:
+        return
+
+    rows = [
+        {
+            "plate_id": plate_id,
+            "well": well.well,
+            "compound": well.compound,
+            "concentration": well.concentration,
+            "moa": well.moa,
+            "control_type": control_type(well.compound, well.concentration),
+        }
+        for well in wells
+    ]
+    statement = insert(WellLayout).values(rows)
+    session.execute(
+        statement.on_conflict_do_update(
+            index_elements=["plate_id", "well"],
+            set_={
+                column: statement.excluded[column]
+                for column in ("compound", "concentration", "moa", "control_type")
+            },
+        )
+    )
 
 
 def _insert_work_units(session: Session, unit_ids: Sequence[uuid.UUID]) -> None:

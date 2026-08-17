@@ -29,6 +29,7 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 18 | **`plates.expected_channels`** (§6.2, §7.1) | Sem conjunto esperado guardado, "campo a que falta um canal" não tem de que faltar, e `INCOMPLETE` era um valor de enum inatingível |
 | 19 | **`plate_qc` por readout, com Z′ bruto** (§6.4, §9.3) | O Z′ sobre o readout normalizado não consegue avaliar a própria normalização |
 | 20 | **`image_digest` injetado no arranque** (§12) | Uma imagem não pode conter o seu próprio digest; lê-se depois do build |
+| 21 | **`plate.wells` no manifesto, com `control_type` derivado no servidor** (§7.1, §9.1) | O layout entra pela API como tudo o resto, e nenhum cliente pode declarar um poço como controlo |
 
 ---
 
@@ -440,7 +441,12 @@ POST /v1/batches/{id}/manifest
 {
   "kind": "HCS_FIELD",
   "plate": { "barcode": "Week1_22141", "n_rows": 8, "n_cols": 12,
-             "expected_channels": ["DAPI", "Tubulin", "Actin"] },
+             "expected_channels": ["DAPI", "Tubulin", "Actin"],
+             "wells": [
+               { "well": "B02", "compound": "DMSO",  "concentration": 0.0 },
+               { "well": "B03", "compound": "taxol", "concentration": 0.3,
+                 "moa": "Microtubule stabilizer" }
+             ] },
   "units": [
     { "well": "B04", "field_index": 1,
       "channels": {
@@ -452,6 +458,10 @@ POST /v1/batches/{id}/manifest
 }
 202 { "units_registered": 240, "duplicates_skipped": 0, "incomplete": 0 }
 ```
+
+**O `plate.wells` é opcional e o servidor é que decide o que é controlo.** O corpo transporta o par `(composto, concentração)` e mais nada; o `control_type` é derivado no servidor pela regra do §9.1. Não é uma conveniência: se o cliente pudesse declará-lo, o seed podia marcar o taxol como controlo positivo nas suas oito concentrações e o Z′ passaria a medir a dispersão de uma curva dose-resposta continuando a parecer uma métrica de qualidade. A regra vive num sítio — `hcs.science.controls` — e aplica-se a todos os clientes que venham a existir.
+
+Poços não nomeados ficam intactos; um poço nomeado é substituído por inteiro. Ao contrário do `expected_channels`, que define o que "completo" significa para unidades já aceites, o layout só afeta análise futura — por isso uma correção pode ser uma correção em vez de um 409.
 
 **Os nomes de canal vêm do CSV, não de uma convenção codificada.** O `BBBC021_v1_image.csv` traz `Image_FileName_DAPI`, `Image_FileName_Tubulin` e `Image_FileName_Actin` como colunas próprias. O seed lê de lá. Nenhum código deste repositório mapeia `w1`/`w2`/`w4`.
 
