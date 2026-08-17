@@ -260,6 +260,17 @@ services:
 
 volumes:
   postgres-data:
+  # The only volume that is not on the internal disk. BBBC021 is 96.8 GiB and the
+  # internal disk has ~163 GB free, so uploading the plates there would both crowd it and
+  # duplicate onto the wrong disk data that already lives on the SSD. A named volume with
+  # a bind device keeps the service definition unchanged and puts the choice in one place.
+  #
+  # The SSD is APFS, so MinIO gets the POSIX semantics it needs. On exFAT it would not.
   minio-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MINIO_DATA_PATH:?set MINIO_DATA_PATH in .env}
   prometheus-data:
   grafana-data:

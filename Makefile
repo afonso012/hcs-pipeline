@@ -5,7 +5,7 @@
 # the remaining work stays visible, and each names the phase that brings it.
 
 .DEFAULT_GOAL := help
-.PHONY: help up down migrate smoke logs ps test lint format check build-context \
+.PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
         data-bbbc039 data-wsi seed spike bench chaos golden
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
@@ -15,8 +15,22 @@
 # while a plain `docker build` in the same directory succeeds. An ASCII symlink to the
 # same tree is enough to satisfy it. Renaming the directory removes the need for this.
 BUILD_CONTEXT := $(HOME)/.cache/hcs-pipeline/src
+
+# Read only the one value make needs, rather than including .env wholesale.
+MINIO_DATA_PATH := $(shell sed -n 's/^MINIO_DATA_PATH=//p' .env 2>/dev/null)
+MINIO_DATA_PATH := $(if $(MINIO_DATA_PATH),$(MINIO_DATA_PATH),/Volumes/SSD/hcs-pipeline/minio)
 COMPOSE := docker compose -p hcs -f $(BUILD_CONTEXT)/docker-compose.yml \
            --project-directory $(BUILD_CONTEXT)
+
+# `mkdir -p /Volumes/SSD/...` on an unmounted SSD does not fail — it creates the path on
+# the internal disk, blocks the real mount, and quietly fills the wrong drive with 80 GB
+# of TIFFs. So the mount point has to exist first; only the leaf is created.
+storage:
+	@case "$(MINIO_DATA_PATH)" in \
+	  /Volumes/*) test -d "$$(echo '$(MINIO_DATA_PATH)' | cut -d/ -f1-3)" \
+	    || { echo "$(MINIO_DATA_PATH): the volume is not mounted"; exit 1; } ;; \
+	esac
+	@mkdir -p "$(MINIO_DATA_PATH)"
 
 build-context:
 	@mkdir -p $(dir $(BUILD_CONTEXT))
@@ -32,7 +46,7 @@ help:  ## Show this help
 # would include the digest. So `up` reads it after the build and injects it at start-up.
 # The worker's digest, not the API's: the worker is what produces the numbers a run
 # records (§12).
-up: build-context  ## Bring up the core profile and run migrations
+up: build-context storage  ## Bring up the core profile and run migrations
 	@test -f .env || cp .env.example .env
 	$(COMPOSE) --profile core build
 	IMAGE_DIGEST="$$(docker image inspect hcs-worker --format '{{.Id}}')" \
