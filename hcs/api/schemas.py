@@ -31,11 +31,20 @@ class BatchOut(BaseModel):
 
 
 class PlateIn(BaseModel):
-    """A plate is reference data: registering it twice is registering it once (§6.2)."""
+    """A plate is reference data: registering it twice is registering it once (§6.2).
+
+    Declaring it a second time with different values is not a re-registration, it is a
+    contradiction, and the endpoint answers 409 rather than picking a winner.
+    """
 
     barcode: str = Field(min_length=1, max_length=100, examples=["Week1_22141"])
     n_rows: int = Field(gt=0, le=64)
     n_cols: int = Field(gt=0, le=64)
+    # What a complete field looks like for this plate. It belongs to the plate rather
+    # than to the manifest because it describes the imaging protocol and not the
+    # submission — and because `incomplete` needs something stable to be incomplete
+    # against.
+    expected_channels: list[str] = Field(min_length=1, examples=[["DAPI", "Tubulin", "Actin"]])
 
 
 class ChannelFileIn(BaseModel):
@@ -63,12 +72,6 @@ class HcsFieldIn(BaseModel):
 class ManifestIn(BaseModel):
     kind: Literal[UnitKind.HCS_FIELD]
     plate: PlateIn
-    # Not in the v4 text, and here is why it is here: without a declared expected set,
-    # "a unit missing a channel" has nothing to be missing *from*, and the `incomplete`
-    # counter the spec promises can never be anything but zero. Inferring the set from
-    # the manifest — the modal channel set, say — would rebuild exactly the kind of
-    # implicit convention §7.1 deleted.
-    required_channels: list[str] = Field(min_length=1, examples=[["DAPI", "Tubulin", "Actin"]])
     units: list[HcsFieldIn] = Field(min_length=1, max_length=5000)
 
 

@@ -91,22 +91,48 @@ class Run(Base):
 class WorkUnit(Base):
     """The indivisible piece of work: one HCS field or one WSI slide (§5).
 
-    Deliberately thin — no domain columns at all. Everything that differs between the two
-    rails lives in a subtype table with its own constraints, so neither rail has to carry
-    nullable columns belonging to the other.
+    Deliberately thin — no domain columns, and no batch either. Everything that differs
+    between the two rails lives in a subtype table with its own constraints, so neither
+    rail has to carry nullable columns belonging to the other.
 
     `id` is not generated here. It is the deterministic UUIDv5 of `hcs.identity`, which is
     what makes the manifest endpoint idempotent by construction (§7.1).
     """
 
     __tablename__ = "work_units"
-    __table_args__ = (Index("work_units_batch_ix", "batch_id", "kind"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("batches.id", ondelete="CASCADE"), nullable=False
-    )
     kind: Mapped[UnitKind] = mapped_column(pg_enum(UnitKind, "unit_kind"), nullable=False)
+
+
+class BatchUnit(Base):
+    """Which units a batch contains.
+
+    Not an extra table — the batch's actual content. It used to be smeared across a
+    `batch_id` column on `work_units`, which made a field belong to exactly one batch
+    forever, for the same reason a `batch_id` on `plates` would have made a plate belong
+    to one batch: membership was stored on the thing instead of expressed as a relation.
+
+    The damage was concrete. The development batch registers `Week1_22141`; the
+    scientific set of 43 plates includes it again, and would have silently registered 480
+    fewer fields — so a run over 41 plates would report itself as a run over 43, and the
+    dose curves for those two plates would vanish without a number moving.
+    """
+
+    __tablename__ = "batch_units"
+    __table_args__ = (
+        # The forward direction is covered by the primary key. This is the reverse: which
+        # batches contain a given unit, which is how a shared unit is recognised as shared
+        # rather than deleted along with the first batch that drops it.
+        Index("batch_units_unit_ix", "work_unit_id"),
+    )
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("batches.id", ondelete="CASCADE"), primary_key=True
+    )
+    work_unit_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("work_units.id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 class UnitRun(Base):

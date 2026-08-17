@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from hcs.db import (
     Batch,
+    BatchUnit,
     HcsChannelFile,
     HcsField,
     Plate,
@@ -65,13 +66,20 @@ def register_field(
     unit_id = hcs_field_id(plate.barcode, well, field_index)
     session.execute(
         insert(WorkUnit)
-        .values(id=unit_id, batch_id=batch.id, kind=UnitKind.HCS_FIELD)
+        .values(id=unit_id, kind=UnitKind.HCS_FIELD)
         .on_conflict_do_nothing(index_elements=["id"])
     )
     session.execute(
         insert(HcsField)
         .values(work_unit_id=unit_id, plate_id=plate.id, well=well, field_index=field_index)
         .on_conflict_do_nothing(index_elements=["work_unit_id"])
+    )
+    # Membership is a third insert into its own table, because the unit is not owned by
+    # any one batch.
+    session.execute(
+        insert(BatchUnit)
+        .values(batch_id=batch.id, work_unit_id=unit_id)
+        .on_conflict_do_nothing(index_elements=["batch_id", "work_unit_id"])
     )
     return unit_id
 
@@ -86,7 +94,9 @@ def batch(session: Session) -> Batch:
 
 @pytest.fixture
 def plate(session: Session) -> Plate:
-    created = Plate(barcode="Week1_22141", n_rows=8, n_cols=12)
+    created = Plate(
+        barcode="Week1_22141", n_rows=8, n_cols=12, expected_channels=["Actin", "DAPI", "Tubulin"]
+    )
     session.add(created)
     session.flush()
     return created
@@ -160,13 +170,55 @@ class TestManifestIdempotency:
     def test_the_same_field_on_another_plate_is_another_unit(
         self, session: Session, batch: Batch, plate: Plate
     ) -> None:
-        other = Plate(barcode="Week1_22161", n_rows=8, n_cols=12)
+        other = Plate(barcode="Week1_22161", n_rows=8, n_cols=12, expected_channels=["DAPI"])
         session.add(other)
         session.flush()
 
         assert register_field(session, batch, plate, "B04", 1) != register_field(
             session, batch, other, "B04", 1
         )
+
+
+class TestBatchMembership:
+    """A field is reference data. Batches reference it; none of them owns it."""
+
+    def test_a_field_can_belong_to_two_batches(
+        self, session: Session, batch: Batch, plate: Plate
+    ) -> None:
+        """The development set and the scientific set overlap, and must be allowed to.
+
+        With membership stored as a column on the unit, registering `Week1_22141` into a
+        second batch registered nothing: the row already existed, so the scientific batch
+        came out 480 fields short and its run reported 41 plates as 43.
+        """
+        scientific = Batch(external_ref="scientific")
+        session.add(scientific)
+        session.flush()
+
+        development_unit = register_field(session, batch, plate, "B04", 1)
+        scientific_unit = register_field(session, scientific, plate, "B04", 1)
+        session.flush()
+
+        assert development_unit == scientific_unit  # the same physical field
+        assert session.scalar(select(func.count()).select_from(WorkUnit)) == 1
+        assert session.scalar(select(func.count()).select_from(BatchUnit)) == 2
+
+    def test_dropping_one_batch_leaves_the_unit_in_the_other(
+        self, session: Session, batch: Batch, plate: Plate
+    ) -> None:
+        scientific = Batch(external_ref="scientific")
+        session.add(scientific)
+        session.flush()
+        unit_id = register_field(session, batch, plate, "B04", 1)
+        register_field(session, scientific, plate, "B04", 1)
+        session.flush()
+
+        session.delete(batch)
+        session.flush()
+
+        assert session.get(WorkUnit, unit_id) is not None
+        remaining = session.scalars(select(BatchUnit.batch_id)).all()
+        assert list(remaining) == [scientific.id]
 
 
 class TestChannelFiles:
@@ -265,8 +317,11 @@ class TestLifetimes:
         session.delete(batch)
         session.flush()
 
-        assert session.scalar(select(func.count()).select_from(WorkUnit)) == 0
-        assert session.scalar(select(func.count()).select_from(HcsField)) == 0
+        # The membership goes; the unit and its subtype stay, because another batch may
+        # hold them and a field is reference data just as a plate is.
+        assert session.scalar(select(func.count()).select_from(BatchUnit)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkUnit)) == 1
+        assert session.scalar(select(func.count()).select_from(HcsField)) == 1
         assert session.get(Plate, plate.id) is not None
 
     def test_deleting_a_run_leaves_the_work_units_standing(

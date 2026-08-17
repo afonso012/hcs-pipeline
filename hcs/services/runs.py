@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from hcs.config import Settings
-from hcs.db import Batch, BatchStatus, Run, UnitRun, UnitStatus, WorkUnit
+from hcs.db import Batch, BatchStatus, BatchUnit, Run, UnitRun, UnitStatus
 from hcs.lineage import config_hash, lockfile_hash
 
 
@@ -26,15 +26,27 @@ class EmptyBatchError(ValueError):
     pass
 
 
+def units_in_batch(session: Session, batch_id: uuid.UUID) -> Sequence[uuid.UUID]:
+    """The units this batch contains, in a stable order.
+
+    Membership comes from `batch_units`, not from a column on the unit: a field belongs
+    to as many batches as have registered it, and the scientific set including a plate
+    the development batch already used is the normal case, not a duplicate.
+    """
+    return session.scalars(
+        select(BatchUnit.work_unit_id)
+        .where(BatchUnit.batch_id == batch_id)
+        .order_by(BatchUnit.work_unit_id)
+    ).all()
+
+
 def submit_batch(session: Session, batch_id: uuid.UUID, settings: Settings) -> Run:
     """Create a run over every unit in the batch. The caller commits and enqueues."""
     batch = session.get(Batch, batch_id)
     if batch is None:
         raise BatchNotFoundError(str(batch_id))
 
-    unit_ids = session.scalars(
-        select(WorkUnit.id).where(WorkUnit.batch_id == batch_id).order_by(WorkUnit.id)
-    ).all()
+    unit_ids = units_in_batch(session, batch_id)
     if not unit_ids:
         raise EmptyBatchError(str(batch_id))
 

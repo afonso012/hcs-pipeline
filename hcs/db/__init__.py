@@ -14,7 +14,7 @@ from hcs.db.aggregates import (
     WellProfile,
 )
 from hcs.db.base import Base
-from hcs.db.core import Batch, Run, UnitRun, WorkUnit
+from hcs.db.core import Batch, BatchUnit, Run, UnitRun, WorkUnit
 from hcs.db.enums import BatchStatus, ErrorClass, RunStatus, UnitKind, UnitStatus
 from hcs.db.subtypes import HcsChannelFile, HcsField, Plate, WellLayout, WsiSlide
 
@@ -24,6 +24,7 @@ __all__ = [
     "Batch",
     "BatchEffect",
     "BatchStatus",
+    "BatchUnit",
     "DoseResponse",
     "ErrorClass",
     "HcsChannelFile",

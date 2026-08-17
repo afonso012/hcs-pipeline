@@ -90,7 +90,9 @@ def clean_db(migrated_engine: Engine) -> Iterator[Engine]:
     """
     yield migrated_engine
     with migrated_engine.begin() as connection:
-        connection.execute(text("TRUNCATE batches, plates, api_keys CASCADE"))
+        # work_units is listed explicitly: it no longer hangs off batches, so truncating
+        # batches alone leaves every unit behind and the next test starts dirty.
+        connection.execute(text("TRUNCATE batches, plates, work_units, api_keys CASCADE"))
 
 
 @pytest.fixture

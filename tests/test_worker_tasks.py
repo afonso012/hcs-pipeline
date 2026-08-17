@@ -37,8 +37,12 @@ def submit(client: Any, units: int = 2) -> None:
         f"/v1/batches/{batch_id}/manifest",
         json={
             "kind": "HCS_FIELD",
-            "plate": {"barcode": BARCODE, "n_rows": 8, "n_cols": 12},
-            "required_channels": ["DAPI"],
+            "plate": {
+                "barcode": BARCODE,
+                "n_rows": 8,
+                "n_cols": 12,
+                "expected_channels": ["DAPI"],
+            },
             "units": [
                 {
                     "well": "B04",

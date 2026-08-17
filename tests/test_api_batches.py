@@ -32,11 +32,15 @@ def field(well: str, index: int, channels: tuple[str, ...] = CHANNELS) -> dict[s
     }
 
 
-def manifest(*units: dict[str, Any]) -> dict[str, Any]:
+def manifest(*units: dict[str, Any], barcode: str = BARCODE) -> dict[str, Any]:
     return {
         "kind": "HCS_FIELD",
-        "plate": {"barcode": BARCODE, "n_rows": 8, "n_cols": 12},
-        "required_channels": list(CHANNELS),
+        "plate": {
+            "barcode": barcode,
+            "n_rows": 8,
+            "n_cols": 12,
+            "expected_channels": list(CHANNELS),
+        },
         "units": list(units),
     }
 
@@ -122,7 +126,10 @@ class TestManifest:
         ("mutation", "reason"),
         [
             ({"units": []}, "no units"),
-            ({"required_channels": []}, "no required channels"),
+            (
+                {"plate": {"barcode": BARCODE, "n_rows": 8, "n_cols": 12, "expected_channels": []}},
+                "no expected channels",
+            ),
             ({"kind": "WSI_SLIDE"}, "wrong rail for this body"),
         ],
     )
@@ -138,6 +145,78 @@ class TestManifest:
         payload = manifest(field("B04", 1))
         payload["units"][0]["channels"]["DAPI"]["sha256"] = "not-a-digest"
         assert api_client.post(f"/v1/batches/{batch_id}/manifest", json=payload).status_code == 422
+
+
+class TestOverlappingBatches:
+    def test_the_same_plate_can_go_into_a_second_batch(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """The scientific set includes plates the development batch already used.
+
+        Before membership moved to `batch_units`, this registered nothing: the units
+        existed, so the second batch came out empty and its submit answered 409. A run
+        over 43 plates would quietly have been a run over 41.
+        """
+        development = create_batch(api_client)
+        scientific = create_batch(api_client)
+        payload = manifest(field("B04", 1), field("B04", 2))
+
+        api_client.post(f"/v1/batches/{development}/manifest", json=payload)
+        second = api_client.post(f"/v1/batches/{scientific}/manifest", json=payload).json()
+
+        assert second == {"units_registered": 2, "duplicates_skipped": 0, "incomplete": 0}
+        assert api_client.get(f"/v1/batches/{scientific}").json()["total_units"] == 2
+        assert api_client.post(f"/v1/batches/{scientific}/submit").status_code == 202
+        with Session(clean_db) as session:
+            assert session.scalar(select(func.count()).select_from(WorkUnit)) == 2
+
+    def test_two_runs_over_a_shared_unit_keep_separate_state(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        development = create_batch(api_client)
+        scientific = create_batch(api_client)
+        payload = manifest(field("B04", 1))
+        api_client.post(f"/v1/batches/{development}/manifest", json=payload)
+        api_client.post(f"/v1/batches/{scientific}/manifest", json=payload)
+
+        api_client.post(f"/v1/batches/{development}/submit")
+        api_client.post(f"/v1/batches/{scientific}/submit")
+
+        with Session(clean_db) as session:
+            # One unit, two runs, two rows of state. The primary key of unit_runs already
+            # allowed this, which is why sharing a unit needed no change there.
+            assert session.scalar(select(func.count()).select_from(WorkUnit)) == 1
+            assert session.scalar(select(func.count()).select_from(UnitRun)) == 2
+
+
+class TestPlateIsReferenceData:
+    def test_a_plate_cannot_be_redeclared_with_different_channels(self, api_client: Any) -> None:
+        """409, not 422: the body is well formed, it contradicts the record.
+
+        Letting it through would redefine "complete" for fields already accepted under
+        the previous definition, and `incomplete` would start counting against a moving
+        target.
+        """
+        batch_id = create_batch(api_client)
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(field("B04", 1)))
+
+        contradiction = manifest(field("B04", 1))
+        contradiction["plate"]["expected_channels"] = ["DAPI", "Tubulin"]
+        response = api_client.post(f"/v1/batches/{batch_id}/manifest", json=contradiction)
+
+        assert response.status_code == 409
+        assert "Week1_22141" in response.json()["detail"]
+
+    def test_the_channel_order_declared_is_not_part_of_the_plate(self, api_client: Any) -> None:
+        """Same set, different order, is the same declaration — not a contradiction."""
+        batch_id = create_batch(api_client)
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(field("B04", 1)))
+
+        reordered = manifest(field("B04", 1))
+        reordered["plate"]["expected_channels"] = list(reversed(CHANNELS))
+        assert (
+            api_client.post(f"/v1/batches/{batch_id}/manifest", json=reordered).status_code == 202
+        )
 
 
 class TestSubmit:

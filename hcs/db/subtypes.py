@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from hcs.db.base import Base
@@ -42,6 +43,19 @@ class Plate(Base):
     barcode: Mapped[str] = mapped_column(Text, nullable=False, unique=True)  # 'Week1_22141'
     n_rows: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     n_cols: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    # The channels the imaging protocol produces for every field of this plate, stored
+    # sorted. It lives here rather than in the manifest body because it is a property of
+    # the assay, not of a submission: two manifests for the same plate must not be able
+    # to disagree about what a complete field looks like.
+    #
+    # It is also what makes `unit_status.INCOMPLETE` reachable at all. Before this column
+    # that value could never be set — at manifest time there is no run to write a status
+    # to, and at processing time nothing knew what to expect. Now a worker that fetches a
+    # field and finds a channel gone from storage has something to compare against.
+    #
+    # An empty array means "not yet declared", not "expects nothing": the first manifest
+    # after this column existed fills it in.
+    expected_channels: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
 
 
 class HcsField(Base):

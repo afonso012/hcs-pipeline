@@ -28,9 +28,15 @@ help:  ## Show this help
 
 # --- the stack ------------------------------------------------------------------------
 
+# An image cannot contain its own digest — the digest is of the content, and the content
+# would include the digest. So `up` reads it after the build and injects it at start-up.
+# The worker's digest, not the API's: the worker is what produces the numbers a run
+# records (§12).
 up: build-context  ## Bring up the core profile and run migrations
 	@test -f .env || cp .env.example .env
-	$(COMPOSE) --profile core up -d --build
+	$(COMPOSE) --profile core build
+	IMAGE_DIGEST="$$(docker image inspect hcs-worker --format '{{.Id}}')" \
+		$(COMPOSE) --profile core up -d
 	$(COMPOSE) run --rm --no-deps api alembic upgrade head
 
 down: build-context  ## Stop everything and delete the volumes

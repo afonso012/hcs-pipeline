@@ -58,7 +58,20 @@ class WellProfile(Base):
 
 
 class PlateQc(Base):
-    """Assay quality of one plate in one run (§9.3)."""
+    """Assay quality of one plate in one run, per readout (§9.3).
+
+    `readout` is in the key so Z' can be computed on the raw measurement as well as on
+    the normalised one. That is not redundancy — it is the only way the number says
+    anything about the normalisation.
+
+    Z' on `viability_readout` alone is close to circular: the readout is normalised
+    against the plate's own DMSO median, so the *location* of the negative control is
+    pinned by construction. The spreads are still real, so the number is not meaningless,
+    but it cannot tell you whether normalising improved the separation, because the
+    anchor of that separation is what normalising defines. Computing it on the raw
+    readout as well turns the difference between the two into an actual measurement:
+    what normalisation bought.
+    """
 
     __tablename__ = "plate_qc"
 
@@ -68,6 +81,8 @@ class PlateQc(Base):
     run_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
     )
+    # 'viability' | 'viability_raw' | 'morphology'
+    readout: Mapped[str] = mapped_column(Text, primary_key=True)
     z_prime: Mapped[float | None] = mapped_column(REAL)
     cv_negative: Mapped[float | None] = mapped_column(REAL)
     n_negative: Mapped[int | None] = mapped_column(Integer)

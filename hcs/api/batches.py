@@ -5,13 +5,12 @@ import uuid
 from collections.abc import Sequence
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
 
 from hcs.api.deps import SessionDep, SettingsDep
 from hcs.api.schemas import BatchCreate, BatchOut, ManifestIn, ManifestOut, SubmitOut
-from hcs.db import Batch, WorkUnit
-from hcs.services.manifest import register_hcs_manifest
-from hcs.services.runs import BatchNotFoundError, EmptyBatchError, submit_batch
+from hcs.db import Batch
+from hcs.services.manifest import PlateMismatchError, register_hcs_manifest
+from hcs.services.runs import BatchNotFoundError, EmptyBatchError, submit_batch, units_in_batch
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +54,13 @@ def register_manifest(
     if session.get(Batch, batch_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such batch: {batch_id}")
 
-    outcome = register_hcs_manifest(session, batch_id, manifest)
+    try:
+        outcome = register_hcs_manifest(session, batch_id, manifest)
+    except PlateMismatchError as exc:
+        # 409, not 422: the body is well formed, it just contradicts what the plate
+        # already says. Accepting it would redefine "complete" for fields already
+        # registered under the previous definition.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     session.commit()
     return ManifestOut(
         units_registered=outcome.units_registered,
@@ -77,7 +82,7 @@ def submit(batch_id: uuid.UUID, session: SessionDep, settings: SettingsDep) -> S
         ) from exc
 
     run_id, total_units = run.id, run.total_units
-    unit_ids = session.scalars(select(WorkUnit.id).where(WorkUnit.batch_id == batch_id)).all()
+    unit_ids = units_in_batch(session, batch_id)
     session.commit()
 
     # Enqueue only after the commit. A worker is faster than a transaction: publish first

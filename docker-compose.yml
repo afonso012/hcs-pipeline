@@ -23,6 +23,9 @@ x-storage-env: &storage-env
   BUCKET_RAW: ${BUCKET_RAW:-raw}
   BUCKET_RESULTS: ${BUCKET_RESULTS:-results}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # Set by `make up` from the built worker image. "unknown" is what a run records when
+  # the stack is started by hand, and it is deliberately visible rather than plausible.
+  IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
 
 services:
   postgres:

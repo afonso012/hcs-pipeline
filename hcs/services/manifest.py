@@ -9,19 +9,28 @@ That property depends entirely on `hcs.identity`: with a generated id, the secon
 would insert a fresh parent, collide on `UNIQUE (plate_id, well, field_index)` in the
 subtype, and leave an orphan that is invisible to every query and still counted in
 `total_units`.
+
+Because a unit's identity is global, the same field can be registered into any number of
+batches — the development batch and the scientific set both contain `Week1_22141`, and
+neither is a duplicate of the other. `units_registered` therefore counts new rows in
+`batch_units`: new *to this batch*, not new to the database.
 """
 
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from hcs.api.schemas import HcsFieldIn, ManifestIn, PlateIn
-from hcs.db import Batch, HcsChannelFile, HcsField, Plate, UnitKind, WorkUnit
+from hcs.db import Batch, BatchUnit, HcsChannelFile, HcsField, Plate, UnitKind, WorkUnit
 from hcs.identity import hcs_field_id
+
+
+class PlateMismatchError(ValueError):
+    """The manifest describes a plate the database already knows differently."""
 
 
 @dataclass(frozen=True)
@@ -35,14 +44,13 @@ def register_hcs_manifest(
     session: Session, batch_id: uuid.UUID, manifest: ManifestIn
 ) -> ManifestOutcome:
     """Register the fields of one plate into a batch. The caller commits."""
-    plate_id = _upsert_plate(session, manifest.plate)
+    plate_id, expected = _upsert_plate(session, manifest.plate)
 
-    required = set(manifest.required_channels)
     # A field missing a channel is rejected whole (§5): the DNA channel finds the nuclei
     # and the others are measured *inside* that mask, so two channels out of three do not
     # make two thirds of a measurement. It is reported, not registered — registering it
     # would put a unit into `total_units` that can never be processed.
-    complete = [unit for unit in manifest.units if required <= unit.channels.keys()]
+    complete = [unit for unit in manifest.units if set(expected) <= unit.channels.keys()]
     incomplete = len(manifest.units) - len(complete)
     if not complete:
         return ManifestOutcome(0, 0, incomplete)
@@ -51,9 +59,10 @@ def register_hcs_manifest(
         hcs_field_id(manifest.plate.barcode, unit.well, unit.field_index) for unit in complete
     ]
 
-    registered = _insert_work_units(session, batch_id, unit_ids)
+    _insert_work_units(session, unit_ids)
     _insert_fields(session, plate_id, unit_ids, complete)
     _insert_channel_files(session, unit_ids, complete)
+    registered = _add_to_batch(session, batch_id, unit_ids)
     _refresh_total_units(session, batch_id)
 
     return ManifestOutcome(
@@ -63,35 +72,58 @@ def register_hcs_manifest(
     )
 
 
-def _upsert_plate(session: Session, plate: PlateIn) -> uuid.UUID:
-    """Get the plate's id, creating the row if this is the first batch to mention it.
+def _upsert_plate(session: Session, plate: PlateIn) -> tuple[uuid.UUID, list[str]]:
+    """Get the plate's id and its expected channel set, creating the row if it is new.
 
-    `DO UPDATE` rather than `DO NOTHING` only so RETURNING yields a row on the conflicting
-    path too; the update itself is a no-op on the barcode.
+    An empty `expected_channels` means "not yet declared" — the state a plate registered
+    before that column existed is in — and this manifest fills it. A plate that already
+    declares something different is a contradiction rather than an update: silently
+    picking one of the two would let a later manifest redefine what "complete" means for
+    fields that were already accepted under the old definition.
     """
-    statement = (
-        insert(Plate)
-        .values(id=uuid.uuid4(), barcode=plate.barcode, n_rows=plate.n_rows, n_cols=plate.n_cols)
-        .on_conflict_do_update(index_elements=["barcode"], set_={"barcode": plate.barcode})
-        .returning(Plate.id)
+    statement = insert(Plate).values(
+        id=uuid.uuid4(),
+        barcode=plate.barcode,
+        n_rows=plate.n_rows,
+        n_cols=plate.n_cols,
+        expected_channels=sorted(plate.expected_channels),
     )
-    return session.scalars(statement).one()
+    upsert = statement.on_conflict_do_update(
+        index_elements=["barcode"],
+        set_={
+            "expected_channels": case(
+                (
+                    func.cardinality(Plate.expected_channels) == 0,
+                    statement.excluded.expected_channels,
+                ),
+                else_=Plate.expected_channels,
+            )
+        },
+    ).returning(Plate.id, Plate.n_rows, Plate.n_cols, Plate.expected_channels)
+
+    plate_id, n_rows, n_cols, expected = session.execute(upsert).one()
+
+    declared = (plate.n_rows, plate.n_cols, sorted(plate.expected_channels))
+    if (n_rows, n_cols, sorted(expected)) != declared:
+        raise PlateMismatchError(
+            f"plate {plate.barcode} is already registered as {n_rows}x{n_cols} with "
+            f"channels {sorted(expected)}; this manifest declares "
+            f"{plate.n_rows}x{plate.n_cols} with {declared[2]}"
+        )
+    return plate_id, list(expected)
 
 
-def _insert_work_units(session: Session, batch_id: uuid.UUID, unit_ids: Sequence[uuid.UUID]) -> int:
-    """Insert the parents, returning how many were actually new.
+def _insert_work_units(session: Session, unit_ids: Sequence[uuid.UUID]) -> None:
+    """Register the units themselves. Existing ones are left alone and not counted.
 
-    The count comes from RETURNING rather than from `rowcount` or a prior SELECT: it is
-    the only number that reflects what the database really did, which is what
-    `duplicates_skipped` claims to report.
+    A unit already present may belong to another batch entirely, which is not a duplicate
+    of anything — `_add_to_batch` is what decides whether *this* batch already had it.
     """
-    statement = (
+    session.execute(
         insert(WorkUnit)
-        .values([{"id": uid, "batch_id": batch_id, "kind": UnitKind.HCS_FIELD} for uid in unit_ids])
+        .values([{"id": uid, "kind": UnitKind.HCS_FIELD} for uid in unit_ids])
         .on_conflict_do_nothing(index_elements=["id"])
-        .returning(WorkUnit.id)
     )
-    return len(session.scalars(statement).all())
 
 
 def _insert_fields(
@@ -138,13 +170,29 @@ def _insert_channel_files(
     )
 
 
+def _add_to_batch(session: Session, batch_id: uuid.UUID, unit_ids: Sequence[uuid.UUID]) -> int:
+    """Put the units in the batch, returning how many were not already in it.
+
+    The count comes from RETURNING rather than from `rowcount` or a prior SELECT: it is
+    the only number that reflects what the database really did, which is what
+    `duplicates_skipped` claims to report.
+    """
+    statement = (
+        insert(BatchUnit)
+        .values([{"batch_id": batch_id, "work_unit_id": uid} for uid in unit_ids])
+        .on_conflict_do_nothing(index_elements=["batch_id", "work_unit_id"])
+        .returning(BatchUnit.work_unit_id)
+    )
+    return len(session.scalars(statement).all())
+
+
 def _refresh_total_units(session: Session, batch_id: uuid.UUID) -> None:
     """Recount rather than add.
 
     Incrementing by the number just inserted would drift the moment a manifest is
-    partially re-sent. Counting is one cheap query against an indexed column and cannot.
+    partially re-sent. Counting is one cheap query against the primary key and cannot.
     """
     total = session.scalar(
-        select(func.count()).select_from(WorkUnit).where(WorkUnit.batch_id == batch_id)
+        select(func.count()).select_from(BatchUnit).where(BatchUnit.batch_id == batch_id)
     )
     session.execute(update(Batch).where(Batch.id == batch_id).values(total_units=total))
