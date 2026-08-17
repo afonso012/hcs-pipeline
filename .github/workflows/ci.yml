@@ -40,7 +40,7 @@ jobs:
 
       # --frozen fails if uv.lock is stale rather than resolving anew. Without it,
       # `lockfile_hash` in the run lineage (§12) would record a file nobody installed.
-      - run: uv sync --frozen --extra dev
+      - run: uv sync --frozen --extra dev --extra imaging
 
       - name: Lint
         run: uv run ruff check .
@@ -76,7 +76,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
 
-      - run: uv sync --frozen --extra dev
+      - run: uv sync --frozen --extra dev --extra imaging
 
       # Unit and property tests first: they need nothing, they are fast, and a failure
       # here should not be waiting behind a container pull.
