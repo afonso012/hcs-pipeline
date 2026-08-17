@@ -25,6 +25,10 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 14 | **`work_units.id` determinístico (UUIDv5)** (§7.1) | A ordem de inserção natural deixava `work_units` órfãos ao reexecutar o manifesto |
 | 15 | **Objetivo D dividido em D-workers e D-batching** (§19) | "Speedup ≥ 3×" testava a sorte, exatamente o defeito corrigido no F |
 | 16 | **Lote dourado redimensionado** (§13.2) | 20 campos não chegam para calcular o IC50 que o próprio critério exigia |
+| 17 | **`batch_units` substitui `work_units.batch_id`** (§6.1) | O mesmo erro da linha 13, um nível abaixo: um campo pertencia a um lote e só a um, e o conjunto científico registava 480 campos a menos em silêncio |
+| 18 | **`plates.expected_channels`** (§6.2, §7.1) | Sem conjunto esperado guardado, "campo a que falta um canal" não tem de que faltar, e `INCOMPLETE` era um valor de enum inatingível |
+| 19 | **`plate_qc` por readout, com Z′ bruto** (§6.4, §9.3) | O Z′ sobre o readout normalizado não consegue avaliar a própria normalização |
+| 20 | **`image_digest` injetado no arranque** (§12) | Uma imagem não pode conter o seu próprio digest; lê-se depois do build |
 
 ---
 
@@ -214,11 +218,21 @@ CREATE INDEX runs_batch_ix ON runs (batch_id, started_at DESC);
 --   WSI_SLIDE -> uuid5(NS_HCS, f"WSI_SLIDE|{content_sha256}")
 -- Ver §7.1: é isto que torna o manifesto reexecutável por construção.
 CREATE TABLE work_units (
-    id       UUID PRIMARY KEY,
-    batch_id UUID NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
-    kind     unit_kind NOT NULL
+    id   UUID PRIMARY KEY,
+    kind unit_kind NOT NULL
 );
-CREATE INDEX work_units_batch_ix ON work_units (batch_id, kind);
+
+-- O CONTEÚDO do lote. Não é uma tabela a mais: com `batch_id` em `work_units`, um
+-- campo pertencia a um lote e só a um, para sempre — o mesmo erro que pôr `batch_id`
+-- em `plates`, um nível abaixo. O conjunto científico de 43 placas inclui a
+-- Week1_22141 que o lote de desenvolvimento já usou, e registá-la registava zero:
+-- o run saía com 480 campos a menos e reportava 41 placas como 43.
+CREATE TABLE batch_units (
+    batch_id     UUID NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    work_unit_id UUID NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,
+    PRIMARY KEY (batch_id, work_unit_id)
+);
+CREATE INDEX batch_units_unit_ix ON batch_units (work_unit_id);   -- o sentido inverso
 
 -- Estado POR (unidade, run). Reprocessar não sobrescreve o run anterior.
 CREATE TABLE unit_runs (
@@ -246,10 +260,17 @@ CREATE INDEX unit_runs_stuck_ix    ON unit_runs (status, started_at)
 -- Week1_22141, e o conjunto científico volta a incluí-la. A pertença ao lote
 -- flui por work_units.batch_id -> hcs_fields.plate_id, e não precisa de estar aqui.
 CREATE TABLE plates (
-    id      UUID PRIMARY KEY,
-    barcode TEXT NOT NULL UNIQUE,            -- 'Week1_22141'
-    n_rows  SMALLINT NOT NULL,
-    n_cols  SMALLINT NOT NULL
+    id                UUID PRIMARY KEY,
+    barcode           TEXT NOT NULL UNIQUE,  -- 'Week1_22141'
+    n_rows            SMALLINT NOT NULL,
+    n_cols            SMALLINT NOT NULL,
+    -- Os canais que o protocolo de imagem produz para cada campo desta placa.
+    -- Vive aqui e não no manifesto porque descreve o ensaio, não a submissão: dois
+    -- manifestos da mesma placa não podem discordar sobre o que é um campo completo.
+    -- É também o que torna `unit_status.INCOMPLETE` atribuível — no manifesto ainda
+    -- não há run para lhe escrever estado, e no processamento faltava contra o quê
+    -- comparar. Array vazio significa "ainda não declarado".
+    expected_channels TEXT[] NOT NULL
 );
 
 CREATE TABLE hcs_fields (
@@ -332,14 +353,22 @@ CREATE TABLE well_profiles (
     PRIMARY KEY (plate_id, well, run_id)
 );
 
+-- Uma linha por readout, para o Z' poder ser calculado também sobre o valor BRUTO.
+-- Não é redundância: o `viability_readout` é normalizado contra a mediana de DMSO da
+-- própria placa, portanto a LOCALIZAÇÃO do controlo negativo está fixada por
+-- construção. As dispersões continuam reais, logo o número não é vazio — mas não
+-- consegue dizer se a normalização melhorou a separação, porque é a normalização que
+-- define a âncora dessa separação. Com o bruto ao lado, a diferença entre os dois
+-- passa a ser uma medição: o que a normalização comprou.
 CREATE TABLE plate_qc (
     plate_id    UUID NOT NULL REFERENCES plates(id) ON DELETE CASCADE,
     run_id      UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    readout     TEXT NOT NULL,               -- 'viability' | 'viability_raw' | 'morphology'
     z_prime     REAL,
     cv_negative REAL,
     n_negative  INT, n_positive INT,
     passed      BOOLEAN,
-    PRIMARY KEY (plate_id, run_id)
+    PRIMARY KEY (plate_id, run_id, readout)
 );
 
 -- IC50 por PLACA: a série de dose completa vive numa só placa (§21.1),
@@ -410,7 +439,8 @@ POST /v1/batches
 POST /v1/batches/{id}/manifest
 {
   "kind": "HCS_FIELD",
-  "plate": { "barcode": "Week1_22141", "n_rows": 8, "n_cols": 12 },
+  "plate": { "barcode": "Week1_22141", "n_rows": 8, "n_cols": 12,
+             "expected_channels": ["DAPI", "Tubulin", "Actin"] },
   "units": [
     { "well": "B04", "field_index": 1,
       "channels": {
@@ -546,7 +576,9 @@ Ambos entram em `well_profiles`; ambos podem gerar curvas (`dose_response.readou
 Z′ = 1 − 3(σ_pos + σ_neg) / |μ_pos − μ_neg|
 ```
 
-Calculado por placa sobre o `viability_readout`, com DMSO como negativo e taxol 0,3 µM como positivo — ambos presentes nas 55 placas.
+Calculado por placa **sobre dois readouts**: o `viability_readout` normalizado e o valor bruto. DMSO como negativo e taxol 0,3 µM como positivo — ambos presentes nas 55 placas.
+
+**Porquê os dois.** O `viability_readout` é normalizado contra a mediana de DMSO da própria placa, portanto a *localização* do controlo negativo está fixada por construção. As dispersões continuam a ser informação real, logo o Z′ normalizado não é uma tautologia — mede alguma coisa. O que não consegue é dizer se a normalização melhorou a separação, porque é a normalização que define a âncora dessa separação. O Z′ bruto é uma verificação independente do ensaio, e **a diferença entre os dois é a medição do que a normalização comprou** — um resultado pequeno mas verdadeiro, ao lado do efeito de lote da Fase 6.
 
 `Z′ > 0.5` excelente; `0 < Z′ ≤ 0.5` marginal; `Z′ ≤ 0` inutilizável — os controlos sobrepõem-se e nenhum resultado da placa é de confiança. Placas abaixo do limiar são **marcadas** (`plate_qc.passed = false`) e **excluídas das conclusões**; o dashboard recusa mostrar-lhes resultados. É o detalhe que faz um biólogo levar o sistema a sério.
 
@@ -657,6 +689,8 @@ Se o Ray Serve ganhar, o resultado é "implementei-o, percebi-o, e uso a versão
 Um resultado científico que não se consegue reproduzir não é resultado.
 
 **Cada execução grava:** digest da imagem de contentor (nunca a tag — as tags mudam), hash sha256 da configuração canonicalizada, hash do `uv.lock`, seed aleatória, versão do pipeline, hashes de todos os inputs. Tudo em `runs`, espelhado no MLflow.
+
+**Como o digest chega lá.** Uma imagem não pode conter o seu próprio digest — o digest é do conteúdo, e o conteúdo incluiria o digest. Também não se lê em runtime: um contentor só descobre a sua imagem através do socket do Docker, que não lhe deve ser dado. O `make up` lê-o depois do build e injeta-o como variável de ambiente no arranque. Regista-se o digest da **imagem do worker**, não da API: é o worker que produz os números. Sem injeção, o valor é `unknown` — visível, e não um valor plausível a fingir que é linhagem.
 
 **Determinismo.** Seed fixada em `numpy`, `random` e nos backends de DL. Para o caminho clássico, o resultado deve ser bit-a-bit idêntico entre execuções. Para o caminho DL não será — as reduções em vírgula flutuante não comutam e a ordem depende do batching. **Declara-se, não se esconde:** o caminho clássico é reproduzível bit-a-bit, o caminho DL dentro de uma tolerância que se mede e documenta.
 
@@ -1050,6 +1084,10 @@ Fixa-se já o que bloqueia o arranque:
 
 - **Desenvolvimento: `Week1_22141` + `Week1_22161`.** 480 campos, mesma semana, séries de dose completas, DMSO e taxol presentes. Chega para as Fases 1–5 inteiras.
 - **Lote dourado: `Week9_39282`**, fora do conjunto de desenvolvimento.
+
+E fixa-se a **condição em que a medição vale**, porque a máquina real não é a do §15:
+
+> O Docker Desktop desta máquina tem **7,7 GB**, não os 10 GB que o §15 assume, e partilha-os com outros stacks. O perfil `core` a 4 workers pede ~8 GB e não cabe. A medição da Fase 2 corre com o **Docker Desktop a 10 GB** e os **outros stacks parados**. Baixar o limite por worker para caber seria trocar o que se está a medir pelo que a máquina deixa — o defeito que o §19 corrigiu no critério F. Se a medição correr noutras condições, o orçamento real fica registado ao lado do número e este deixa de ser comparável com o que o §15 prometeu.
 
 E fixa-se a **regra**, para que "decidido pelo spike" não se torne decidido por inércia:
 
