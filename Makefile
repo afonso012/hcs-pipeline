@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed spike bench chaos golden
+        data-bbbc039 data-wsi seed seed-dry spike bench chaos golden
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -19,6 +19,10 @@ BUILD_CONTEXT := $(HOME)/.cache/hcs-pipeline/src
 # Read only the one value make needs, rather than including .env wholesale.
 MINIO_DATA_PATH := $(shell sed -n 's/^MINIO_DATA_PATH=//p' .env 2>/dev/null)
 MINIO_DATA_PATH := $(if $(MINIO_DATA_PATH),$(MINIO_DATA_PATH),/Volumes/SSD/hcs-pipeline/minio)
+BBBC021_ROOT := $(shell sed -n 's/^BBBC021_ROOT=//p' .env 2>/dev/null)
+BBBC021_ROOT := $(if $(BBBC021_ROOT),$(BBBC021_ROOT),/Volumes/SSD/Imagens_Celulares_em_Larga_Escala/BBBC021)
+# The two plates Phase 2 develops against: 480 fields, 3.5 GB, one replicate each.
+PLATES ?= Week1_22141,Week1_22161
 COMPOSE := docker compose -p hcs -f $(BUILD_CONTEXT)/docker-compose.yml \
            --project-directory $(BUILD_CONTEXT)
 
@@ -103,8 +107,12 @@ data-bbbc039:  ## TODO Phase 2: fetch the ground truth masks missing from the SS
 data-wsi:  ## TODO Phase 2: fetch the OpenSlide test slides (WSI rail)
 	uv run python scripts/fetch_openslide_slides.py
 
-seed:  ## TODO Phase 1 step 4: register the development plates from the CSV
-	uv run python scripts/seed_bbbc021.py --plates Week1_22141,Week1_22161
+seed: ## Upload and register the development plates (PLATES=... BATCH_ID=... to override)
+	uv run python scripts/seed_bbbc021.py --root "$(BBBC021_ROOT)" --plates "$(PLATES)" \
+		--external-ref bbbc021-dev $(if $(BATCH_ID),--batch-id $(BATCH_ID))
+
+seed-dry: ## Same, but check the CSV and the files on disk without uploading anything
+	uv run python scripts/seed_bbbc021.py --root "$(BBBC021_ROOT)" --plates "$(PLATES)" --dry-run
 
 # --- measurement (Phases 2, 4, 5) -----------------------------------------------------------
 

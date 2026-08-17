@@ -4,9 +4,9 @@ The other two properties were testable from Phase 1 because they are geometry. T
 needed a plate layout to exist, and it does now. It is the last of the three.
 
 The number that would go wrong is Z'. With taxol marked positive at every concentration,
-the positive mean becomes an average across a five-point dose curve and the positive
-standard deviation becomes that curve's spread — so Z' would fall as the assay got
-*better* at separating doses.
+the positive mean becomes an average across an eight-point dose curve spanning three
+orders of magnitude, and the positive standard deviation becomes that curve's spread — so
+Z' would fall as the assay got *better* at separating doses.
 """
 
 import pytest
@@ -15,8 +15,10 @@ from hypothesis import strategies as st
 
 from hcs.science.controls import POSITIVE_CONTROL, ControlType, control_type
 
-# The taxol series actually present on Week1_22141, from BBBC021_v1_image.csv.
-TAXOL_SERIES = (0.03, 0.1, 0.3, 1.0, 3.0)
+# The taxol series actually present on Week1_22141, read back from `well_layout` after the
+# seed ran: eight concentrations over 15 wells, of which the seven at 0.3 uM are the
+# positive control and the other eight are the compound's own dose curve.
+TAXOL_SERIES = (0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0)
 
 
 class TestTheSpecProperty:
