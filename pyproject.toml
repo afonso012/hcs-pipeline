@@ -110,6 +110,9 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["hcs.worker.*"]
 disallow_untyped_decorators = false
+# `prometheus_client.multiprocess.MultiProcessCollector` is unannotated. Narrowed to the
+# worker package, which is the only place the prefork pool makes it necessary.
+disallow_untyped_calls = false
 
 # `ignore_missing_imports` above stops mattering for skimage once the imaging extra is
 # installed: mypy then follows it and finds `regionprops_table` and its neighbours

@@ -13,7 +13,7 @@ sending traffic to an instance that cannot serve it.
 
 import logging
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import boto3
@@ -26,6 +26,7 @@ from sqlalchemy import Engine, create_engine, text
 from hcs import __version__
 from hcs.api import batches
 from hcs.config import Settings, get_settings
+from hcs.services.queue import queue_depth
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="HCS pipeline", version=__version__, lifespan=lifespan)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(batches.router)
+
+
+@app.middleware("http")
+async def _refresh_queue_depth(request: Any, call_next: Any) -> Any:
+    """Read the queue depth when Prometheus asks, not on a timer.
+
+    §14.1 wants `celery_queue_depth` as a gauge. A background task refreshing it would
+    have the dashboard show a number up to its own interval old, and would keep dialling
+    Redis on an idle system. Reading it as the scrape arrives makes the gauge exactly as
+    fresh as the scrape and costs one `LLEN`.
+
+    Failures are swallowed on purpose, and only here: a broker that is down should make
+    `/readyz` say so, not make `/metrics` disappear at the moment somebody is looking at a
+    dashboard to find out why.
+    """
+    if request.url.path == "/metrics":
+        with suppress(Exception):
+            queue_depth(request.app.state.settings)
+    response: Any = await call_next(request)
+    return response
 
 
 @app.get("/healthz", status_code=status.HTTP_200_OK)

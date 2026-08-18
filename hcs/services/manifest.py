@@ -17,8 +17,9 @@ neither is a duplicate of the other. `units_registered` therefore counts new row
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any, Final
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -38,6 +39,32 @@ from hcs.db import (
 )
 from hcs.identity import hcs_field_id, wsi_slide_id
 from hcs.science.controls import control_type
+
+# PostgreSQL's wire protocol carries at most this many bound parameters per statement, and
+# exceeding it is an OperationalError rather than a slow query. A manifest of 5000 units —
+# which `ManifestIn` explicitly permits — puts 5000 x 3 channels x 7 columns = 105,000
+# parameters into one INSERT. The cap was therefore unreachable: every manifest above about
+# 3120 units answered 500.
+#
+# Found by the load test of §14.3 and by nothing else. The seed publishes 240 units per
+# plate, the tests publish three, and both sit comfortably under a limit that the API
+# advertises as five thousand.
+PARAMETER_LIMIT: Final = 65_535
+
+
+def _in_parameter_batches(rows: Sequence[dict[str, Any]]) -> Iterator[Sequence[dict[str, Any]]]:
+    """Split rows so no single statement exceeds the parameter limit.
+
+    Sized from the row's own width rather than a constant, because the tables here range
+    from two columns to seven and a single safe number would either overflow the widest or
+    needlessly fragment the narrowest.
+    """
+    if not rows:
+        return
+    per_row = max(1, len(rows[0]))
+    size = max(1, PARAMETER_LIMIT // per_row)
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
 
 
 class PlateMismatchError(ValueError):
@@ -156,16 +183,17 @@ def _upsert_well_layout(
         }
         for well in wells
     ]
-    statement = insert(WellLayout).values(rows)
-    session.execute(
-        statement.on_conflict_do_update(
-            index_elements=["plate_id", "well"],
-            set_={
-                column: statement.excluded[column]
-                for column in ("compound", "concentration", "moa", "control_type")
-            },
+    for batch in _in_parameter_batches(rows):
+        statement = insert(WellLayout).values(list(batch))
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["plate_id", "well"],
+                set_={
+                    column: statement.excluded[column]
+                    for column in ("compound", "concentration", "moa", "control_type")
+                },
+            )
         )
-    )
 
 
 def _insert_work_units(session: Session, unit_ids: Sequence[uuid.UUID]) -> None:
@@ -174,11 +202,11 @@ def _insert_work_units(session: Session, unit_ids: Sequence[uuid.UUID]) -> None:
     A unit already present may belong to another batch entirely, which is not a duplicate
     of anything — `_add_to_batch` is what decides whether *this* batch already had it.
     """
-    session.execute(
-        insert(WorkUnit)
-        .values([{"id": uid, "kind": UnitKind.HCS_FIELD} for uid in unit_ids])
-        .on_conflict_do_nothing(index_elements=["id"])
-    )
+    rows = [{"id": uid, "kind": UnitKind.HCS_FIELD} for uid in unit_ids]
+    for batch in _in_parameter_batches(rows):
+        session.execute(
+            insert(WorkUnit).values(list(batch)).on_conflict_do_nothing(index_elements=["id"])
+        )
 
 
 def _insert_fields(
@@ -199,7 +227,8 @@ def _insert_fields(
     # Bare DO NOTHING, not `index_elements=["work_unit_id"]`: this table carries a second
     # unique constraint on (plate_id, well, field_index), and naming only the primary key
     # would turn a conflict on the other one into a 500 instead of a no-op.
-    session.execute(insert(HcsField).values(rows).on_conflict_do_nothing())
+    for batch in _in_parameter_batches(rows):
+        session.execute(insert(HcsField).values(list(batch)).on_conflict_do_nothing())
 
 
 def _insert_channel_files(
@@ -218,11 +247,12 @@ def _insert_channel_files(
         for uid, unit in zip(unit_ids, units, strict=True)
         for name, channel in unit.channels.items()
     ]
-    session.execute(
-        insert(HcsChannelFile)
-        .values(rows)
-        .on_conflict_do_nothing(index_elements=["work_unit_id", "channel"])
-    )
+    for batch in _in_parameter_batches(rows):
+        session.execute(
+            insert(HcsChannelFile)
+            .values(list(batch))
+            .on_conflict_do_nothing(index_elements=["work_unit_id", "channel"])
+        )
 
 
 def _add_to_batch(session: Session, batch_id: uuid.UUID, unit_ids: Sequence[uuid.UUID]) -> int:
@@ -232,13 +262,17 @@ def _add_to_batch(session: Session, batch_id: uuid.UUID, unit_ids: Sequence[uuid
     the only number that reflects what the database really did, which is what
     `duplicates_skipped` claims to report.
     """
-    statement = (
-        insert(BatchUnit)
-        .values([{"batch_id": batch_id, "work_unit_id": uid} for uid in unit_ids])
-        .on_conflict_do_nothing(index_elements=["batch_id", "work_unit_id"])
-        .returning(BatchUnit.work_unit_id)
-    )
-    return len(session.scalars(statement).all())
+    rows = [{"batch_id": batch_id, "work_unit_id": uid} for uid in unit_ids]
+    added = 0
+    for batch in _in_parameter_batches(rows):
+        statement = (
+            insert(BatchUnit)
+            .values(list(batch))
+            .on_conflict_do_nothing(index_elements=["batch_id", "work_unit_id"])
+            .returning(BatchUnit.work_unit_id)
+        )
+        added += len(session.scalars(statement).all())
+    return added
 
 
 def _refresh_total_units(session: Session, batch_id: uuid.UUID) -> None:
@@ -268,30 +302,30 @@ def register_wsi_manifest(
     """
     unit_ids = [wsi_slide_id(slide.sha256) for slide in manifest.slides]
 
-    session.execute(
-        insert(WorkUnit)
-        .values([{"id": uid, "kind": UnitKind.WSI_SLIDE} for uid in unit_ids])
-        .on_conflict_do_nothing(index_elements=["id"])
-    )
-    session.execute(
-        insert(WsiSlide)
-        .values(
-            [
-                {
-                    "work_unit_id": uid,
-                    "slide_uri": slide.uri,
-                    "content_sha256": slide.sha256.lower(),
-                    "mpp": slide.mpp,
-                    "level_count": slide.level_count,
-                    "width": slide.width,
-                    "height": slide.height,
-                    "size_bytes": slide.size_bytes,
-                }
-                for uid, slide in zip(unit_ids, manifest.slides, strict=True)
-            ]
+    units = [{"id": uid, "kind": UnitKind.WSI_SLIDE} for uid in unit_ids]
+    for batch in _in_parameter_batches(units):
+        session.execute(
+            insert(WorkUnit).values(list(batch)).on_conflict_do_nothing(index_elements=["id"])
         )
-        .on_conflict_do_nothing(index_elements=["work_unit_id"])
-    )
+    slide_rows = [
+        {
+            "work_unit_id": uid,
+            "slide_uri": slide.uri,
+            "content_sha256": slide.sha256.lower(),
+            "mpp": slide.mpp,
+            "level_count": slide.level_count,
+            "width": slide.width,
+            "height": slide.height,
+            "size_bytes": slide.size_bytes,
+        }
+        for uid, slide in zip(unit_ids, manifest.slides, strict=True)
+    ]
+    for batch in _in_parameter_batches(slide_rows):
+        session.execute(
+            insert(WsiSlide)
+            .values(list(batch))
+            .on_conflict_do_nothing(index_elements=["work_unit_id"])
+        )
     registered = _add_to_batch(session, batch_id, unit_ids)
     _refresh_total_units(session, batch_id)
 

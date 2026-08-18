@@ -19,3 +19,14 @@ scrape_configs:
       - names: [api]
         type: A
         port: 8000
+
+  # The workers are not HTTP servers by nature — each starts a small one on worker_ready
+  # (see hcs/worker/tasks.py). Discovered the same way as the API, because `replicas` means
+  # the count changes and a static target would pin the dashboard to whichever one answered
+  # first. These are the series behind panels 2 and 3, so losing half of them silently
+  # would make the anchor panel wrong rather than empty.
+  - job_name: worker
+    dns_sd_configs:
+      - names: [worker]
+        type: A
+        port: 9100

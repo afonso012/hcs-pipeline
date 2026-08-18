@@ -120,6 +120,9 @@ services:
     profiles: [core, obs, science, full]
     environment:
       <<: [*postgres-url, *storage-env]
+      QUEUE_HIGH_WATERMARK: ${QUEUE_HIGH_WATERMARK:-50000}
+      QUEUE_LOW_WATERMARK: ${QUEUE_LOW_WATERMARK:-5000}
+      DISPATCH_BLOCK_SIZE: ${DISPATCH_BLOCK_SIZE:-500}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -143,10 +146,17 @@ services:
       context: .
       dockerfile: docker/worker.Dockerfile
     profiles: [core, obs, science, full]
+    # Not published to the host: Prometheus reaches it over the compose network, and one
+    # host port cannot serve N replicas anyway.
+    expose:
+      - "9100"
     environment:
       <<: [*postgres-url, *storage-env]
       CHUNK_SIZE: ${CHUNK_SIZE:-1024}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-32}
+      QUEUE_HIGH_WATERMARK: ${QUEUE_HIGH_WATERMARK:-50000}
+      QUEUE_LOW_WATERMARK: ${QUEUE_LOW_WATERMARK:-5000}
+      DISPATCH_BLOCK_SIZE: ${DISPATCH_BLOCK_SIZE:-500}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

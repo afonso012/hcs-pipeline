@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from hcs.imaging.measure import FEATURE_PREFIX, MORPHOLOGY_COLUMNS
+from hcs.metrics import PARQUET_BYTES_PER_ROW
 
 PREFIX: Final = "cell_metrics"
 
@@ -51,6 +52,10 @@ def write_cell_metrics(
     """
     key = object_key(run_id, work_unit_id)
     body = serialise_cell_metrics(cells, run_id, work_unit_id)
+    if len(cells):
+        # §14.1, and the number ADR-007 turns on. Measured here rather than estimated
+        # because it is the only place both the byte count and the row count are in scope.
+        PARQUET_BYTES_PER_ROW.observe(len(body) / len(cells))
 
     # Write beside the destination, then replace it. An interrupted upload leaves a stray
     # temporary object rather than a truncated file that reads as a short unit.

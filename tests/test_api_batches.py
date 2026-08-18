@@ -353,6 +353,51 @@ class TestWellLayout:
         assert self.layout_of(clean_db) == {"B02": ("DMSO", ControlType.NEGATIVE)}
 
 
+class TestLargeManifests:
+    """The size `ManifestIn` advertises has to be a size the endpoint survives.
+
+    PostgreSQL's wire protocol carries at most 65535 bound parameters per statement. One
+    INSERT for a manifest's channel files is `units x 3 channels x 7 columns`, so anything
+    above about 3120 units used to answer 500 — while the schema said 5000 was fine.
+
+    Found by the load test of §14.3 and by nothing else: the seed publishes 240 units per
+    plate and every other test here publishes three.
+    """
+
+    @staticmethod
+    def many(count: int) -> list[dict[str, Any]]:
+        return [field(f"{'BCDEFG'[i % 6]}{i % 10 + 2:02d}", i) for i in range(count)]
+
+    def test_a_manifest_past_the_parameter_limit_is_accepted(self, api_client: Any) -> None:
+        batch_id = create_batch(api_client)
+        units = self.many(4000)  # 4000 x 3 x 7 = 84,000 parameters in one statement
+
+        response = api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(*units))
+
+        assert response.status_code == 202
+        assert response.json()["units_registered"] == 4000
+        assert api_client.get(f"/v1/batches/{batch_id}").json()["total_units"] == 4000
+
+    def test_the_advertised_maximum_is_the_real_maximum(self, api_client: Any) -> None:
+        """`ManifestIn` caps units at 5000. A cap the endpoint cannot honour is a lie in the
+        schema, and the OpenAPI document publishes it."""
+        from hcs.api.schemas import HcsManifestIn
+
+        cap = next(
+            constraint.max_length
+            for constraint in HcsManifestIn.model_fields["units"].metadata
+            if hasattr(constraint, "max_length")
+        )
+        batch_id = create_batch(api_client)
+
+        response = api_client.post(
+            f"/v1/batches/{batch_id}/manifest", json=manifest(*self.many(cap))
+        )
+
+        assert response.status_code == 202
+        assert response.json()["units_registered"] == cap
+
+
 class TestWsiManifest:
     """The second rail through the same endpoint (§7.1).
 

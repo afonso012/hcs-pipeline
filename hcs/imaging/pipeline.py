@@ -37,6 +37,7 @@ from hcs.geometry import CoreRegion, core_regions
 from hcs.imaging.measure import measure_block
 from hcs.imaging.qc import FieldQc, check_field
 from hcs.imaging.segment import SegmentationConfig, segment_chunk
+from hcs.metrics import CHUNKS_PROCESSED
 
 
 class Sliceable(Protocol):
@@ -95,15 +96,22 @@ def measure_field(
     # §8.2: QC before the computation, not after. A field where everything died has no
     # nuclei for the threshold to have found, and segmenting it anyway is how one dead
     # well produced 2166 objects and inverted a dose-response curve.
-    qc = check_field(_read(segmentation, 0, 0, height, width), level)
+    plane = _read(segmentation, 0, 0, height, width)
+    qc = check_field(plane, level)
+    # The x-axis of §14.2's anchor panel: decoded bytes of every channel this unit read.
+    # Carried on the frame rather than returned, because the worker is the only caller that
+    # wants it and the scripts would have to thread it through for nothing.
+    input_bytes = plane.nbytes * max(1, len(intensities))
     if not qc.accepted:
-        return _empty_like(intensities, qc)
+        return _attach(_empty_like(intensities, qc), qc, input_bytes)
 
+    regions = core_regions(height, width, chunks.chunk, chunks.overlap)
     frames = [
         _measure_one(region, segmentation, intensities, (height, width), seg_cfg, level)
-        for region in core_regions(height, width, chunks.chunk, chunks.overlap)
+        for region in regions
     ]
-    return _attach(_number(pd.concat(frames, ignore_index=True)), qc)
+    CHUNKS_PROCESSED.inc(len(regions))
+    return _attach(_number(pd.concat(frames, ignore_index=True)), qc, input_bytes)
 
 
 def _empty_like(intensities: Mapping[str, Sliceable], qc: FieldQc) -> pd.DataFrame:
@@ -114,16 +122,23 @@ def _empty_like(intensities: Mapping[str, Sliceable], qc: FieldQc) -> pd.DataFra
     """
     from hcs.imaging.measure import empty_frame
 
-    return _attach(empty_frame(tuple(intensities)).assign(label=pd.Series(dtype="int32")), qc)
+    return empty_frame(tuple(intensities)).assign(label=pd.Series(dtype="int32"))
 
 
-def _attach(frame: pd.DataFrame, qc: FieldQc) -> pd.DataFrame:
-    """Carry the QC verdict on the frame, out of band of the rows.
+def _attach(frame: pd.DataFrame, qc: FieldQc, input_bytes: int = 0) -> pd.DataFrame:
+    """Carry the field-level facts on the frame, out of band of the rows.
 
-    An attribute rather than a column: it describes the field, and repeating it on every
-    one of a thousand cells would put it in the Parquet schema where §6.3 does not want it.
+    Attributes rather than columns: they describe the field, and repeating them on each of
+    a thousand cells would put them in the Parquet schema where §6.3 does not want them.
+
+    **Scalars, not objects.** `to_parquet` JSON-encodes `attrs` into the file's metadata, so
+    a dataclass here raises `TypeError` at write time — which is exactly how 480 units in a
+    row failed while 200 tests stayed green: the state-machine tests stub the imaging out,
+    and the imaging tests never write a file.
     """
-    frame.attrs["qc"] = qc
+    frame.attrs["qc_accepted"] = qc.accepted
+    frame.attrs["qc_foreground_fraction"] = qc.foreground_fraction
+    frame.attrs["input_bytes"] = input_bytes
     return frame
 
 

@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # changing it changes every row downstream.
     segmentation_channel: str = "DAPI"
 
+    # --- backpressure (§10) ---
+    # Two marks, not one. A single threshold makes the dispatcher oscillate across it —
+    # publish, cross, stop, drain by one, publish again — and the gap between these is the
+    # hysteresis that stops it. The block is how much gets published at a time, so the
+    # broker never holds more than one block beyond what the workers are chewing on.
+    queue_high_watermark: int = 50_000
+    queue_low_watermark: int = 5_000
+    dispatch_block_size: int = 500
+
     # --- lineage (§12) ---
     pipeline_version: str = "classic-0.0.1"
     random_seed: int = 20260812

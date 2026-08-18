@@ -2,9 +2,8 @@
 
 import logging
 import uuid
-from collections.abc import Sequence
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from hcs.api.deps import SessionDep, SettingsDep
 from hcs.api.schemas import (
@@ -21,7 +20,8 @@ from hcs.services.manifest import (
     register_hcs_manifest,
     register_wsi_manifest,
 )
-from hcs.services.runs import BatchNotFoundError, EmptyBatchError, submit_batch, units_in_batch
+from hcs.services.queue import QueueSaturatedError, check_admission
+from hcs.services.runs import BatchNotFoundError, EmptyBatchError, submit_batch
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,26 @@ def register_manifest(
 
 
 @router.post("/{batch_id}/submit", status_code=status.HTTP_202_ACCEPTED)
-def submit(batch_id: uuid.UUID, session: SessionDep, settings: SettingsDep) -> SubmitOut:
-    """Create a run over the batch and enqueue its units."""
+def submit(
+    batch_id: uuid.UUID, session: SessionDep, settings: SettingsDep, response: Response
+) -> SubmitOut:
+    """Create a run over the batch and hand it to the dispatcher (§7.2, §10).
+
+    Admission is checked before the run row exists. Creating a run and then refusing to
+    dispatch it would leave a QUEUED run nobody is working on, which the reconciliation
+    sweep of §16.4 would later have to explain.
+    """
+    try:
+        check_admission(settings)
+    except QueueSaturatedError as exc:
+        # 429 with a Retry-After the client can actually obey, computed from the depth
+        # rather than picked. §10 wants the queue defended, not the client punished.
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=exc.as_problem(),
+            headers={"Retry-After": str(exc.drain_seconds)},
+        ) from exc
+
     try:
         run = submit_batch(session, batch_id, settings)
     except BatchNotFoundError as exc:
@@ -97,17 +115,22 @@ def submit(batch_id: uuid.UUID, session: SessionDep, settings: SettingsDep) -> S
         ) from exc
 
     run_id, total_units = run.id, run.total_units
-    unit_ids = units_in_batch(session, batch_id)
     session.commit()
 
-    # Enqueue only after the commit. A worker is faster than a transaction: publish first
+    # Publish only after the commit. A worker is faster than a transaction: publish first
     # and a task can arrive to find no `unit_runs` row to claim, then fail as a missing
     # unit that in fact exists.
-    _enqueue(unit_ids, run_id)
+    _dispatch(run_id, batch_id)
     return SubmitOut(run_id=run_id, total_units=total_units)
 
 
-def _enqueue(unit_ids: Sequence[uuid.UUID], run_id: uuid.UUID) -> None:
+def _dispatch(run_id: uuid.UUID, batch_id: uuid.UUID) -> None:
+    """Hand the run to the block dispatcher (§10).
+
+    One task published here rather than one per unit. A ten-thousand-unit batch used to
+    mean ten thousand `.delay()` calls inside the request, which is both a slow response
+    and the flood the watermarks exist to prevent.
+    """
     # Imported here, not at module scope: importing the task pulls in the Celery app and
     # opens a broker connection, which would make the API unable to start whenever Redis
     # is down — exactly when /readyz needs to be able to say so.
@@ -116,8 +139,7 @@ def _enqueue(unit_ids: Sequence[uuid.UUID], run_id: uuid.UUID) -> None:
     # `task_always_eager`, and eager mode is what lets the tests drive submit through to a
     # marked unit in one process. The import is cheap because `perform` defers the imaging
     # stack — see the note there.
-    from hcs.worker.tasks import process_unit
+    from hcs.worker.tasks import dispatch_run
 
-    for unit_id in unit_ids:
-        process_unit.delay(str(unit_id), str(run_id))
-    logger.info("enqueued %d units for run %s", len(unit_ids), run_id)
+    dispatch_run.delay(str(run_id), str(batch_id))
+    logger.info("dispatching run %s over batch %s", run_id, batch_id)

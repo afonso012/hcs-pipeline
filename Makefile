@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control bench chaos golden golden-freeze
+        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control load bench chaos golden golden-freeze
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -130,6 +130,14 @@ spike: ## Objective B: RSS against chunk and concurrency, bytes/row (§21.3)
 # first, because it runs inside the worker image.
 negative-control: ## Objective B point 4: prove the memory limit can be hit (§21.3)
 	uv run python scripts/negative_control.py --slides "$(WSI_ROOT)"
+
+# §14.3's two profiles. Headless and time-boxed, because a load test that needs a browser
+# open is a load test that never runs in CI. Point it at the stack, not at a fixture.
+load: ## Run the Locust load profiles (PROFILE=Burst|Sustained, USERS=, TIME=)
+	uv run locust -f tests/load/locustfile.py --headless \
+		--host http://localhost:$${HTTP_PORT:-8080} \
+		--users $(or $(USERS),10) --spawn-rate $(or $(RATE),2) --run-time $(or $(TIME),1m) \
+		$(if $(PROFILE),$(PROFILE),Burst)
 
 chaos:  ## TODO Phase 4: kill workers mid-flight and check the invariants
 	uv run python scripts/chaos_test.py --units 500 --kill 2

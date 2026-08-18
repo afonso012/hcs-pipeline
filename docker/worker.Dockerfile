@@ -21,6 +21,12 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
 
+# prometheus_client's multiprocess mode writes one file per process here, and the exporter
+# in the parent sums them at scrape time. Without it, every metric a forked task increments
+# is invisible — see the note on `_serve_metrics`. Owned by the unprivileged user because
+# the pool children write to it.
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+
 FROM base AS deps
 COPY --from=ghcr.io/astral-sh/uv:0.10.11 /uv /bin/uv
 COPY pyproject.toml uv.lock ./
@@ -55,6 +61,8 @@ USER 10001:10001
 # while holding a live Redis connection would pass any check that only looked at Redis.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD celery -A hcs.worker.celery_app inspect ping -d "celery@$HOSTNAME"
+
+RUN mkdir -p /tmp/prometheus && chown 10001:10001 /tmp/prometheus
 
 CMD ["celery", "-A", "hcs.worker.celery_app", "worker", \
      "--loglevel=INFO", "--concurrency=1", "--without-gossip", "--without-mingle"]

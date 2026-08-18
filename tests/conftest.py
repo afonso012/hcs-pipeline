@@ -50,6 +50,25 @@ def postgres_url() -> Iterator[str]:
         container.stop()
 
 
+@pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    """A real Redis, because §10's backpressure reads a real queue.
+
+    It used to be a closed port on purpose — nothing dialled the broker, and pointing at
+    `127.0.0.1:1` proved it. Admission changed that: `POST /submit` now reads the queue
+    depth before accepting anything, so the depth has to be a number somebody could have
+    got wrong. §13.3 asked for this container from the start.
+    """
+    from testcontainers.redis import RedisContainer
+
+    container = RedisContainer("redis:7.4-alpine")
+    container.start()
+    try:
+        yield f"redis://{container.get_container_host_ip()}:{container.get_exposed_port(6379)}/0"
+    finally:
+        container.stop()
+
+
 @pytest.fixture
 def alembic_cfg(migrated_engine: Engine, postgres_url: str) -> Config:
     """Alembic pointed at the already-migrated session database."""
@@ -97,7 +116,7 @@ def clean_db(migrated_engine: Engine) -> Iterator[Engine]:
 
 @pytest.fixture
 def api_client(
-    clean_db: Engine, postgres_url: str, monkeypatch: pytest.MonkeyPatch
+    clean_db: Engine, postgres_url: str, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Any]:
     """The real app, wired to the test database, with tasks running inline.
 
@@ -108,8 +127,9 @@ def api_client(
     from fastapi.testclient import TestClient
 
     monkeypatch.setenv("DATABASE_URL", postgres_url)
-    # Never dialled: these tests do not touch /readyz, and both clients are lazy.
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
+    # A real broker: `POST /submit` reads the queue depth before admitting anything (§10),
+    # so a closed port would make every submission a 500 rather than a decision.
+    monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("S3_ENDPOINT_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("S3_ACCESS_KEY", "test")
     monkeypatch.setenv("S3_SECRET_KEY", "test")

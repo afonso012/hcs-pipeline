@@ -1,0 +1,335 @@
+{
+  "uid": "hcs-pipeline",
+  "title": "HCS pipeline",
+  "description": "Os seis painéis do §14.2. Definidos em ficheiro e não clicados, para viverem num diff.",
+  "tags": [
+    "hcs"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "1 — Saúde do run",
+      "description": "Progresso, débito e taxa de erro. A primeira pergunta de quem chega: está a andar, e a que ritmo.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(celery_task_duration_seconds_count{status=\"DONE\"}[5m]))",
+          "legendFormat": "unidades/s concluídas",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(celery_task_duration_seconds_count{status=~\"FAILED|INCOMPLETE\"}[5m]))",
+          "legendFormat": "unidades/s falhadas",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(celery_task_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 por unidade (s)",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "2 — Memória vs. tamanho de input  ⟨painel âncora⟩",
+      "description": "A prova visual do Objetivo B-WSI. A linha da memória fica plana enquanto a dos bytes por unidade sobe. Separado por `kind`, porque um campo HCS e uma lâmina diferem em quatro ordens de grandeza e é essa a questão.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "max(worker_memory_rss_bytes) by (phase)",
+          "legendFormat": "RSS {{phase}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(unit_bytes_processed_bucket[10m])) by (le, kind))",
+          "legendFormat": "p95 bytes/unidade {{kind}}",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "3 — Memória vs. concorrência",
+      "description": "O Objetivo B-HCS. RSS agregado contra número de workers vivos: a soma sobe linearmente e o pico por processo não.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(worker_memory_rss_bytes{phase='steady'})",
+          "legendFormat": "RSS agregado",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "max(worker_memory_rss_bytes{phase='steady'})",
+          "legendFormat": "pico por processo",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "count(count(worker_memory_rss_bytes) by (worker_id))",
+          "legendFormat": "workers vivos",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "4 — Fila e backpressure",
+      "description": "Profundidade contra as marcas do §10, e as rejeições 429. A fila nunca deve passar da marca alta: se passar, o dispatcher por blocos não está a segurar.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "celery_queue_depth",
+          "legendFormat": "profundidade {{queue}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(ingestion_rejected_total[5m]))",
+          "legendFormat": "429/s",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(celery_task_retries_total[5m])) by (error_class)",
+          "legendFormat": "retries/s {{error_class}}",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(celery_dlq_total)",
+          "legendFormat": "DLQ acumulado",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "5 — Eficiência do batching",
+      "description": "Fase 7. Distribuição do tamanho de batch de inferência: concentrada em 1 significa que o batching não serve de nada, e é melhor saber isso do que supor. Vazio até o Ray Serve existir.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(inference_batch_size_bucket[5m])) by (le))",
+          "legendFormat": "mediana do batch",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(inference_wait_time_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 de espera (s)",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "6 — Qualidade científica",
+      "description": "Z′ por placa, rejeições de QC e células detetadas. Um Z′ a cair ao longo de semanas é um problema de ensaio, não de software — e só se vê se estiver a ser registado desde o início. O Z′ chega na Fase 6.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "plate_z_prime",
+          "legendFormat": "Z′ {{plate}} / {{readout}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(qc_rejected_total[15m])) by (reason)",
+          "legendFormat": "QC rejeitado/s {{reason}}",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(cells_detected_total[5m]))",
+          "legendFormat": "células/s",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

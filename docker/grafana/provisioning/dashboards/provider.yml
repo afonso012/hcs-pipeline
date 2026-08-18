@@ -1,0 +1,15 @@
+# Dashboards are files in the repository, not state in Grafana's database. A dashboard
+# somebody built by clicking is a dashboard that dies with the volume; this one is
+# reviewable in a diff and comes back with `make up`.
+apiVersion: 1
+
+providers:
+  - name: hcs
+    orgId: 1
+    folder: HCS
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
