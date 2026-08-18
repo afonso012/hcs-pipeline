@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control load bench chaos golden golden-freeze
+        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control load bench chaos accuracy golden golden-freeze
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -24,6 +24,8 @@ BBBC021_ROOT := $(if $(BBBC021_ROOT),$(BBBC021_ROOT),/Volumes/SSD/Imagens_Celula
 # The two plates Phase 2 develops against: 480 fields, 3.5 GB, one replicate each.
 PLATES ?= Week1_22141,Week1_22161
 WSI_ROOT := $(shell sed -n 's/^WSI_ROOT=//p' .env 2>/dev/null)
+BBBC039_ROOT := $(shell sed -n 's/^BBBC039_ROOT=//p' .env 2>/dev/null)
+BBBC039_ROOT := $(if $(BBBC039_ROOT),$(BBBC039_ROOT),/Volumes/SSD/Imagens_Celulares_em_Larga_Escala/BBBC039)
 WSI_ROOT := $(if $(WSI_ROOT),$(WSI_ROOT),/Volumes/SSD/Imagens_Celulares_em_Larga_Escala/OpenSlide)
 COMPOSE := docker compose -p hcs -f $(BUILD_CONTEXT)/docker-compose.yml \
            --project-directory $(BUILD_CONTEXT)
@@ -139,8 +141,14 @@ load: ## Run the Locust load profiles (PROFILE=Burst|Sustained, USERS=, TIME=)
 		--users $(or $(USERS),10) --spawn-rate $(or $(RATE),2) --run-time $(or $(TIME),1m) \
 		$(if $(PROFILE),$(PROFILE),Burst)
 
-chaos:  ## TODO Phase 4: kill workers mid-flight and check the invariants
-	uv run python scripts/chaos_test.py --units 500 --kill 2
+# Needs a batch with units already registered — it submits a real run and then kills
+# workers holding real units. BATCH_ID is required for that reason: inventing units would
+# test the fixture rather than the recovery.
+chaos: ## Kill workers mid-run and check the §16 invariants (BATCH_ID=... required)
+	uv run python scripts/chaos_test.py --batch-id "$(BATCH_ID)" --kill $(or $(KILL),1)
+
+accuracy: ## Score segmentation against BBBC039 annotation (§13.5)
+	uv run python scripts/accuracy_bbbc039.py --root "$(BBBC039_ROOT)" --split $(or $(SPLIT),test)
 
 bench:  ## TODO Phase 5: batching matrix, results to MLflow
 	uv run python scripts/bench_batching.py --workers 1,4 --backends none,manual,ray
