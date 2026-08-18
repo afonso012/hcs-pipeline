@@ -30,6 +30,10 @@ imaging = [
     "bioio-ome-tiff>=1.0",
     "tifffile>=2024.9",
     "openslide-python>=1.4",
+    # The dylib openslide-python binds to. The worker container gets it from apt
+    # (libopenslide0); this wheel is what makes the same import work on a developer
+    # machine, where there is no apt.
+    "openslide-bin>=4.0",
     "scikit-image>=0.24",
     "scipy>=1.14",
 ]
@@ -102,6 +106,7 @@ testpaths = ["tests"]
 markers = [
     "slow: exatidão contra ground truth, corre em nightly",
     "integration: precisa de testcontainers",
+    "wsi: precisa das lâminas OpenSlide em disco (make data-wsi); o CI não as tem",
 ]
 
 [tool.coverage.run]
