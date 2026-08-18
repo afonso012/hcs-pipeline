@@ -35,6 +35,7 @@ from skimage.filters import gaussian, threshold_otsu
 
 from hcs.geometry import CoreRegion, core_regions
 from hcs.imaging.measure import measure_block
+from hcs.imaging.qc import FieldQc, check_field
 from hcs.imaging.segment import SegmentationConfig, segment_chunk
 
 
@@ -91,11 +92,39 @@ def measure_field(
     seg_cfg = segmentation_config or SegmentationConfig()
     level = global_threshold(segmentation, seg_cfg) if threshold is None else threshold
 
+    # §8.2: QC before the computation, not after. A field where everything died has no
+    # nuclei for the threshold to have found, and segmenting it anyway is how one dead
+    # well produced 2166 objects and inverted a dose-response curve.
+    qc = check_field(_read(segmentation, 0, 0, height, width), level)
+    if not qc.accepted:
+        return _empty_like(intensities, qc)
+
     frames = [
         _measure_one(region, segmentation, intensities, (height, width), seg_cfg, level)
         for region in core_regions(height, width, chunks.chunk, chunks.overlap)
     ]
-    return _number(pd.concat(frames, ignore_index=True))
+    return _attach(_number(pd.concat(frames, ignore_index=True)), qc)
+
+
+def _empty_like(intensities: Mapping[str, Sliceable], qc: FieldQc) -> pd.DataFrame:
+    """No rows, but the full schema and the verdict that explains why.
+
+    A rejected field is not a failed one. It produced a real answer — this well is empty —
+    and the caller needs to be able to tell that from a unit that never ran (§8.2).
+    """
+    from hcs.imaging.measure import empty_frame
+
+    return _attach(empty_frame(tuple(intensities)).assign(label=pd.Series(dtype="int32")), qc)
+
+
+def _attach(frame: pd.DataFrame, qc: FieldQc) -> pd.DataFrame:
+    """Carry the QC verdict on the frame, out of band of the rows.
+
+    An attribute rather than a column: it describes the field, and repeating it on every
+    one of a thousand cells would put it in the Parquet schema where §6.3 does not want it.
+    """
+    frame.attrs["qc"] = qc
+    return frame
 
 
 def _number(frame: pd.DataFrame) -> pd.DataFrame:

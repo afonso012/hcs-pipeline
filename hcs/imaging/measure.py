@@ -69,7 +69,7 @@ def measure_block(
     """
     channels = tuple(intensities)
     if not labels.any():
-        return _empty(channels)
+        return empty_frame(channels)
 
     frame = pd.DataFrame(regionprops_table(labels, properties=_SHAPE_PROPERTIES)).rename(
         columns={"centroid-0": "centroid_y", "centroid-1": "centroid_x"}
@@ -80,7 +80,7 @@ def measure_block(
         [region.owns(y, x) for y, x in zip(frame["centroid_y"], frame["centroid_x"], strict=True)]
     ]
     if owned.empty:
-        return _empty(channels)
+        return empty_frame(channels)
 
     owned = owned.assign(touches_border=_touches_border(owned, labels.shape, region, image_shape))
     for channel, pixels in intensities.items():
@@ -173,7 +173,7 @@ def _intensity_columns(channels: tuple[str, ...]) -> list[str]:
     ]
 
 
-def _empty(channels: tuple[str, ...]) -> pd.DataFrame:
+def empty_frame(channels: tuple[str, ...]) -> pd.DataFrame:
     """An empty frame carrying the columns a populated one would have.
 
     A field's rows are assembled by concatenating blocks, and a column that appeared only

@@ -34,6 +34,8 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 23 | **Limiar de Otsu global, não por bloco** (§8.1) | Num bloco de fundo puro o Otsu parte o ruído ao meio — 368 objetos inventados num campo com 77 células |
 | 24 | **Manifesto WSI no mesmo endpoint, união discriminada por `kind`** (§7.1) | Um corpo WSI sem `slides` tem de ser 422 sobre `slides`, não queixa sobre `plate` |
 | 25 | **Lâmina encenada em disco local; medição no nível 0** (§7.1, §8.1) | O OpenSlide lê caminhos e procura dentro deles; e acima do nível 0 os downsamples da Aperio não são inteiros |
+| 26 | **QC de poço vazio antes de segmentar** (§8.2) | Um campo sem células dava 2166 objetos: o Otsu parte o ruído porque não sabe dizer "aqui não há nada" |
+| 27 | **O lote dourado guarda contagens e viabilidade, não o IC50** (§13.2) | Um poço por dose não são réplicas da dose; o IC50 não é estimável, e forçá-lo seria afinar a olhar |
 
 ---
 
@@ -798,7 +800,17 @@ O output de referência é versionado no repositório. Os TIFFs ficam no SSD; o 
 
 A regra é **"nunca afinar a olhar para ele"**, não "nunca processar". Processar o lote dourado na corrida científica final é correto e desejável: dá o mesmo lote medido pelo pipeline afinado e pelo de referência.
 
-Qualquer alteração que desloque a contagem de células mais de 2% ou o IC50 mais de 10% falha o CI. É assim que pipelines científicos evitam deriva silenciosa: o código continua a correr, os números mudam devagar, e ninguém repara. Quando o desvio é intencional, atualiza-se a referência **no mesmo commit** que causa a alteração — e o diff da referência torna-se documentação da mudança.
+Qualquer alteração que desloque a contagem de células mais de 2% falha o CI. É assim que pipelines científicos evitam deriva silenciosa: o código continua a correr, os números mudam devagar, e ninguém repara. Quando o desvio é intencional, atualiza-se a referência **no mesmo commit** que causa a alteração — e o diff da referência torna-se documentação da mudança.
+
+**O IC50 fica registado e não guardado, e o motivo corrige o parágrafo de cima.** A grandeza limitante não são os campos, são os **poços**: o BBBC021 põe um poço por dose numa placa, e quatro campos do mesmo poço são subamostras desse poço e não réplicas da dose — partilham o que quer que o poço tenha feito. O argumento de que 45–50 campos chegariam para um IC50 estava errado sobre o que faltava.
+
+Medido, não suposto. Sobre as oito medianas por poço, a logística de quatro parâmetros devolve IC50 de 1,6×10⁹ µM com R² 0,64; sobre os 32 campos, 2,8×10¹⁴ µM com R² 0,38; com o topo fixado na base de DMSO, como a normalização do §9.1 implica, 1,0×10²⁵ µM. Juntando as duas placas-réplica da Week9 — a replicação verdadeira que o §21.1 aponta — o R² sobe a 0,77 e o IC50 fica em 9,3×10⁸.
+
+A curva é a razão: a mitoxantrona já está a 65% do controlo na dose mais baixa testada, oscila entre 35% e 54% ao longo de duas ordens de grandeza, e só depois cai de 17% para 2%. São duas transições, e uma sigmoide não descreve isso. Restringir o intervalo de doses até o ajuste pegar seria afinar a olhar para a resposta, que é o que esta secção proíbe pelo nome.
+
+Guarda-se então o que é reprodutível: o total de células, a contagem de **cada** campo, e a viabilidade normalizada de **cada** dose, todas a 2%. Prende o pipeline com mais força do que um número derivado prenderia. O `hcs.science.dose_response` está testado contra curvas sintéticas e pronto para um readout que suporte um IC50 — o candidato é o readout de morfologia do §9.3, e isso é Fase 6.
+
+**Uma limitação a declarar:** os TIFFs não estão no repositório, portanto o CI não consegue hoje falhar por uma alteração de segmentação. A camada que corre em todo o lado recalcula o resumo a partir das contagens versionadas e apanha deriva na agregação e no ajuste; a camada que relê pixels corre onde os dados estão, com `make golden`. Fechar a diferença exige o lote dourado acessível a um runner, o que é decisão de infraestrutura e não de código.
 
 ### 13.3 Integração com serviços reais
 

@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control bench chaos golden
+        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control bench chaos golden golden-freeze
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -137,5 +137,10 @@ chaos:  ## TODO Phase 4: kill workers mid-flight and check the invariants
 bench:  ## TODO Phase 5: batching matrix, results to MLflow
 	uv run python scripts/bench_batching.py --workers 1,4 --backends none,manual,ray
 
-golden:  ## TODO Phase 2: reprocess the golden batch and compare against the reference
-	uv run pytest tests/golden -v
+golden: ## Reprocess the golden batch and compare against the reference (§13.2)
+	uv run python scripts/golden_batch.py --root "$(BBBC021_ROOT)"
+
+# Deliberate, and §13.2 says when: in the same commit as the change that moved the numbers,
+# so the diff of the reference documents what changed. Never to make a red build go green.
+golden-freeze: ## Rewrite the golden reference, on purpose
+	uv run python scripts/golden_batch.py --root "$(BBBC021_ROOT)" --freeze

@@ -125,7 +125,11 @@ markers = [
     "slow: exatidão contra ground truth, corre em nightly",
     "integration: precisa de testcontainers",
     "wsi: precisa das lâminas OpenSlide em disco (make data-wsi); o CI não as tem",
+    "golden: reprocessa o lote dourado a partir dos TIFF; precisa do BBBC021 em disco",
 ]
+# O lote dourado importa `scripts.golden_batch`, e sem isto o pytest põe `tests/golden` no
+# sys.path em vez da raiz do repositório.
+pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["hcs"]

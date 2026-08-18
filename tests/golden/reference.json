@@ -1,0 +1,64 @@
+{
+  "compound": "mitoxantrone",
+  "dmso_cells_per_well": 98.5,
+  "doses": [
+    {
+      "cells": 68.0,
+      "concentration": 0.003
+    },
+    {
+      "cells": 55.5,
+      "concentration": 0.01
+    },
+    {
+      "cells": 21.5,
+      "concentration": 0.03
+    },
+    {
+      "cells": 44.5,
+      "concentration": 0.1
+    },
+    {
+      "cells": 52.5,
+      "concentration": 0.3
+    },
+    {
+      "cells": 34.5,
+      "concentration": 1.0
+    },
+    {
+      "cells": 23.5,
+      "concentration": 3.0
+    },
+    {
+      "cells": 2.0,
+      "concentration": 10.0
+    }
+  ],
+  "fields": 56,
+  "fit": {
+    "bottom": -41485.356,
+    "hill": 0.3519,
+    "ic50": 1625005074.245543,
+    "r_squared": 0.64387,
+    "top": 57.483,
+    "within_tested_range": false
+  },
+  "fit_is_guarded": false,
+  "plate": "Week9_39282",
+  "tolerances": {
+    "cells": 0.02,
+    "viability": 0.02
+  },
+  "total_cells": 3556,
+  "viability_pct": [
+    69.036,
+    56.345,
+    21.827,
+    45.178,
+    53.299,
+    35.025,
+    23.858,
+    2.03
+  ]
+}
