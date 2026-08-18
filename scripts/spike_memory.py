@@ -419,10 +419,12 @@ número em que o ADR-007 se decide, e é a razão de `cell_metrics` não viver e
 
 ## O controlo negativo
 
-Por fazer. Pertence ao carril WSI — carregar uma lâmina inteira com PIL sob o limite de
-1,5 GB e registar o OOMKill — e exige lâminas em disco, que ainda não estão. Sem ele, esta
-medição mostra que o consumo é baixo mas não prova que a montagem seria capaz de o detetar
-se fosse alto.
+Feito, e vive em [negative-control.md](negative-control.md). O nível 0 da `CMU-1` carregado
+inteiro sob 1536m morre com `OOMKilled` e saída 137 ao fim de 6 segundos; os mesmos pixels,
+pelo caminho por blocos e sob o mesmo limite, dão 224 560 núcleos e concluem.
+
+É esse par que faz a tabela acima significar alguma coisa. Sem ele, dizer que o consumo é
+baixo não prova que a montagem seria capaz de o detetar se fosse alto.
 """
 
 

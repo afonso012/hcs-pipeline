@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry spike bench chaos golden
+        data-bbbc039 data-wsi seed seed-dry spike negative-control bench chaos golden
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -120,6 +120,12 @@ seed-dry: ## Same, but check the CSV and the files on disk without uploading any
 
 spike: ## Objective B: RSS against chunk and concurrency, bytes/row (§21.3)
 	uv run python scripts/spike_memory.py --out docs/spike-memory.md
+
+# The measurement that makes the others mean anything: the same slide under the same
+# limit, loaded whole (must be OOMKilled) and chunked (must finish). Needs `make up`
+# first, because it runs inside the worker image.
+negative-control: ## Objective B point 4: prove the memory limit can be hit (§21.3)
+	uv run python scripts/negative_control.py --slides "$(WSI_ROOT)"
 
 chaos:  ## TODO Phase 4: kill workers mid-flight and check the invariants
 	uv run python scripts/chaos_test.py --units 500 --kill 2
