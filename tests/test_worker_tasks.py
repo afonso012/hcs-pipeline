@@ -119,7 +119,7 @@ class TestTransientFailure:
 
 class TestIdempotency:
     def test_reprocessing_a_finished_unit_does_not_count_it_twice(
-        self, api_client: Any, clean_db: Engine
+        self, api_client: Any, clean_db: Engine, no_image_work: dict[str, Any]
     ) -> None:
         """§16.2. This is what makes it safe for §16.4 to re-enqueue anything stuck: the
         sweep cannot tell a lost unit from a slow one, so re-running a finished unit has

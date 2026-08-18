@@ -96,6 +96,11 @@ def _enqueue(unit_ids: Sequence[uuid.UUID], run_id: uuid.UUID) -> None:
     # Imported here, not at module scope: importing the task pulls in the Celery app and
     # opens a broker connection, which would make the API unable to start whenever Redis
     # is down — exactly when /readyz needs to be able to say so.
+    #
+    # It stays a `.delay` rather than a `send_task` by name because `send_task` ignores
+    # `task_always_eager`, and eager mode is what lets the tests drive submit through to a
+    # marked unit in one process. The import is cheap because `perform` defers the imaging
+    # stack — see the note there.
     from hcs.worker.tasks import process_unit
 
     for unit_id in unit_ids:

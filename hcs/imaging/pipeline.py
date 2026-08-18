@@ -89,7 +89,18 @@ def measure_field(
         _measure_one(region, segmentation, intensities, (height, width), seg_cfg)
         for region in core_regions(height, width, chunks.chunk, chunks.overlap)
     ]
-    return pd.concat(frames, ignore_index=True)
+    return _number(pd.concat(frames, ignore_index=True))
+
+
+def _number(frame: pd.DataFrame) -> pd.DataFrame:
+    """Give each cell the `label` §6.3 requires: unique within `(work_unit_id, run_id)`.
+
+    It cannot come from the segmenter. Every block numbers its own objects from 1, so the
+    labels only become unique once the blocks are side by side — which is here. Numbering
+    follows block order, so the same image and the same chunking always produce the same
+    labels, and a golden-batch diff points at a cell rather than at a permutation.
+    """
+    return frame.assign(label=np.arange(1, len(frame) + 1, dtype=np.int32))
 
 
 def _measure_one(

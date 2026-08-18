@@ -64,6 +64,10 @@ def _create_run(session: Session, batch_id: uuid.UUID, settings: Settings, total
         "chunk_overlap": settings.chunk_overlap,
         "pipeline_version": settings.pipeline_version,
         "random_seed": settings.random_seed,
+        # Here rather than only in the environment because the Otsu threshold is computed
+        # per block (§8.1): a cell count is a function of the image *and* the chunking, so
+        # a run is comparable only with one that agrees on both.
+        "segmentation_channel": settings.segmentation_channel,
     }
     run = Run(
         batch_id=batch_id,

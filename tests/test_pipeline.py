@@ -139,9 +139,9 @@ class TestMeasurement:
         frame = measure_field(dna, {"DNA": dna, "Tubulin": tubulin}, ChunkConfig(chunk=256))
 
         row = frame.iloc[0]
-        assert row.intensity_mean_Tubulin == pytest.approx(500.0)
-        assert row.intensity_integrated_Tubulin == pytest.approx(500.0 * row.area)
-        assert row.intensity_mean_DNA == pytest.approx(1000.0)
+        assert row.feat_intensity_mean_Tubulin == pytest.approx(500.0)
+        assert row.feat_intensity_integrated_Tubulin == pytest.approx(500.0 * row.area)
+        assert row.feat_intensity_mean_DNA == pytest.approx(1000.0)
 
     def test_a_channel_of_a_different_shape_is_refused(self) -> None:
         """A mis-paired file. Measuring channel B inside a mask from channel A means
@@ -161,7 +161,7 @@ class TestQuietImages:
         frame = measure_field(empty, {"DNA": empty}, ChunkConfig(chunk=128))
 
         assert frame.empty
-        assert "intensity_mean_DNA" in frame.columns
+        assert "feat_intensity_mean_DNA" in frame.columns
         assert frame.touches_border.dtype == np.dtype("bool")
 
     def test_a_block_that_owns_nothing_contributes_nothing(self) -> None:

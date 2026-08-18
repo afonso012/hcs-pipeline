@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session
 
 from hcs.config import get_settings
 from hcs.db import Run, RunStatus, UnitRun, UnitStatus
+from hcs.services.units import IncompleteUnitError, load_hcs_field
+from hcs.storage import s3_client
 from hcs.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -53,14 +55,45 @@ def session_scope() -> Iterator[Session]:
         yield session
 
 
-def perform(work_unit_id: uuid.UUID, run_id: uuid.UUID) -> None:
-    """Do the actual work for one unit. Phase 1 does none.
+def perform(work_unit_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
+    """Fetch, segment, measure and write one unit (§8.1, §8.2, §6.3).
 
-    A named seam rather than an inline `pass`, for two reasons: it says exactly where
-    Phase 2 plugs the chunked read, the segmentation and the Parquet write in, and it
-    gives the failure-semantics tests something to make raise. Without it, the
-    PERMANENT/TRANSIENT split of §16.3 would be a claim with no way to check it.
+    Returns a small QC summary, stored on `unit_runs.qc`. It is the cheapest possible
+    answer to "what did this unit actually do" — a count and a key — and it is what makes
+    a run inspectable without opening 480 Parquet files.
+
+    The order matters. The Parquet write happens before the DONE mark, so a worker killed
+    between the two leaves a unit that gets reprocessed and overwrites its own file (§6.3),
+    rather than one marked DONE with nothing behind it.
+
+    The imaging stack is imported here rather than at module scope, and that is a
+    deployment constraint rather than a style choice. The API imports this module to
+    enqueue, and the API container deliberately does not install the `imaging` extra —
+    scikit-image, scipy and the rest belong to the worker. A module-level import would
+    make `POST /submit` fail with an ImportError for a library the API has no business
+    holding. The worker pays the cost once, on its first unit.
     """
+    from hcs.imaging.pipeline import ChunkConfig, measure_field
+    from hcs.imaging.source import load_field, segmentation_channel
+    from hcs.imaging.writer import write_cell_metrics
+
+    settings = get_settings()
+    with session_scope() as session:
+        field = load_hcs_field(session, work_unit_id)
+
+    pixels = load_field(s3_client(), field.channels)
+    cells = measure_field(
+        segmentation_channel(pixels, settings.segmentation_channel),
+        pixels,
+        ChunkConfig(chunk=settings.chunk_size, overlap=settings.chunk_overlap),
+    )
+    key = write_cell_metrics(s3_client(), settings.bucket_results, cells, run_id, work_unit_id)
+
+    return {
+        "cells": len(cells),
+        "touching_border": int(cells["touches_border"].sum()),
+        "results_key": key,
+    }
 
 
 @celery_app.task(
@@ -87,14 +120,20 @@ def process_unit(self: Any, work_unit_id: str, run_id: str) -> str:
             return UnitStatus.DONE.value
 
     try:
-        perform(unit, run)
+        qc = perform(unit, run)
     except SoftTimeLimitExceeded:
         _fail(unit, run, "soft time limit exceeded", permanent=False)
         raise
+    except IncompleteUnitError as exc:
+        # Not a failure of the pipeline: the plate says this field should have three
+        # channels and storage has two. It is terminal, and it is the only place
+        # `unit_status.INCOMPLETE` can ever be written (§6.2).
+        _fail(unit, run, str(exc), permanent=True, status=UnitStatus.INCOMPLETE)
+        return UnitStatus.INCOMPLETE.value
     except TRANSIENT_ERRORS as exc:
         _fail(unit, run, str(exc), permanent=False)
         raise
-    except Exception as exc:  # a corrupt file, a missing channel, an invalid format
+    except Exception as exc:  # a corrupt file, an unreadable format, a bad shape
         _fail(unit, run, str(exc), permanent=True)
         return UnitStatus.FAILED.value
 
@@ -102,7 +141,7 @@ def process_unit(self: Any, work_unit_id: str, run_id: str) -> str:
         session.execute(
             update(UnitRun)
             .where(UnitRun.work_unit_id == unit, UnitRun.run_id == run)
-            .values(status=UnitStatus.DONE, processed_at=datetime.now(UTC))
+            .values(status=UnitStatus.DONE, processed_at=datetime.now(UTC), qc=qc)
         )
         session.execute(
             update(Run).where(Run.id == run).values(processed_units=Run.processed_units + 1)
@@ -139,8 +178,20 @@ def _claim(session: Session, unit: uuid.UUID, run: uuid.UUID) -> bool:
     return bool(result.rowcount)
 
 
-def _fail(unit: uuid.UUID, run: uuid.UUID, message: str, *, permanent: bool) -> None:
-    """Record the failure in its own transaction, so a re-raise cannot roll it back."""
+def _fail(
+    unit: uuid.UUID,
+    run: uuid.UUID,
+    message: str,
+    *,
+    permanent: bool,
+    status: UnitStatus | None = None,
+) -> None:
+    """Record the failure in its own transaction, so a re-raise cannot roll it back.
+
+    `status` overrides the terminal state for the one case that is permanent without being
+    a failure of the code: a unit missing a channel is INCOMPLETE. It still counts towards
+    `failed_units`, because otherwise a run containing one would never close.
+    """
     with session_scope() as session:
         session.execute(
             update(UnitRun)
@@ -148,7 +199,7 @@ def _fail(unit: uuid.UUID, run: uuid.UUID, message: str, *, permanent: bool) -> 
             .values(
                 # A transient failure goes back to PENDING: the retry has to be able to
                 # claim it again, and the claim only accepts PENDING or PROCESSING.
-                status=UnitStatus.FAILED if permanent else UnitStatus.PENDING,
+                status=status or (UnitStatus.FAILED if permanent else UnitStatus.PENDING),
                 last_error=message[:MAX_STORED_ERROR_CHARS],
                 error_class="PERMANENT" if permanent else "TRANSIENT",
                 processed_at=datetime.now(UTC) if permanent else None,

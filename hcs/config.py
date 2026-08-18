@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # cell, or the centroid policy drops objects it should have kept.
     chunk_size: int = 1024
     chunk_overlap: int = 32
+    # The channel objects are found in (§8.2). An assay decision, not a constant: DAPI for
+    # BBBC021, something else for another stain set. It belongs in the run config because
+    # changing it changes every row downstream.
+    segmentation_channel: str = "DAPI"
 
     # --- lineage (§12) ---
     pipeline_version: str = "classic-0.0.1"

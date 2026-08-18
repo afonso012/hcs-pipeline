@@ -388,12 +388,13 @@ class TestSubmit:
             assert session.scalar(select(func.count()).select_from(UnitRun)) == 2
 
     def test_a_unit_enters_one_side_and_comes_out_marked_on_the_other(
-        self, api_client: Any, clean_db: Engine
+        self, api_client: Any, clean_db: Engine, no_image_work: dict[str, Any]
     ) -> None:
         """The goal of Phase 1 (§20), as one assertion.
 
-        Manifest, submit, worker, marked unit, closed run. The task does no image work
-        yet — that is Phase 2 — but every piece of state around it is real.
+        Manifest, submit, worker, marked unit, closed run. The image work is stubbed —
+        this is a test of the state machine around it, and the pixels have tests of their
+        own — but every piece of state here is real.
         """
         batch_id = create_batch(api_client)
         api_client.post(
@@ -402,15 +403,21 @@ class TestSubmit:
         submitted = api_client.post(f"/v1/batches/{batch_id}/submit").json()
 
         with Session(clean_db) as session:
-            statuses = session.scalars(
-                select(UnitRun.status).where(UnitRun.run_id == uuid.UUID(submitted["run_id"]))
+            marked = session.execute(
+                select(UnitRun.status, UnitRun.qc).where(
+                    UnitRun.run_id == uuid.UUID(submitted["run_id"])
+                )
             ).all()
+            statuses = [status for status, _ in marked]
             run = session.get(Run, uuid.UUID(submitted["run_id"]))
             batch = session.get(Batch, uuid.UUID(batch_id))
             fields = session.scalar(select(func.count()).select_from(HcsField))
 
         assert submitted["total_units"] == 2
         assert list(statuses) == [UnitStatus.DONE, UnitStatus.DONE]
+        # What the unit did, not merely that it finished: a run is inspectable without
+        # opening a Parquet file per unit (§6.3).
+        assert [qc for _, qc in marked] == [no_image_work, no_image_work]
         assert run is not None
         assert run.status is RunStatus.COMPLETED
         assert (run.processed_units, run.failed_units) == (2, 0)

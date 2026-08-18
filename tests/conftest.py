@@ -136,6 +136,25 @@ def api_client(
 
 
 @pytest.fixture
+def no_image_work(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stand in for `perform`, so state-machine tests stay tests of the state machine.
+
+    Since Phase 2, `perform` fetches TIFFs from object storage and writes Parquet back.
+    The tests that assert on statuses, counters and run closure are not about that; they
+    want a unit of work that succeeds. The imaging path has its own tests, and the real
+    thing is exercised against the running stack rather than against a fake S3.
+
+    Not autouse. The failure tests patch `perform` themselves to make it raise, and a
+    fixture that quietly won the race would let those tests pass for the wrong reason.
+    """
+    from hcs.worker import tasks
+
+    qc = {"cells": 42, "touching_border": 3, "results_key": "cell_metrics/stub.parquet"}
+    monkeypatch.setattr(tasks, "perform", lambda unit, run: qc)
+    return qc
+
+
+@pytest.fixture
 def fresh_postgres() -> Iterator[str]:
     """An empty PostgreSQL of its own, for tests that migrate the schema up and down."""
     container = _start_postgres()

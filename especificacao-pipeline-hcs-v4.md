@@ -30,6 +30,7 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 19 | **`plate_qc` por readout, com Z′ bruto** (§6.4, §9.3) | O Z′ sobre o readout normalizado não consegue avaliar a própria normalização |
 | 20 | **`image_digest` injetado no arranque** (§12) | Uma imagem não pode conter o seu próprio digest; lê-se depois do build |
 | 21 | **`plate.wells` no manifesto, com `control_type` derivado no servidor** (§7.1, §9.1) | O layout entra pela API como tudo o resto, e nenhum cliente pode declarar um poço como controlo |
+| 22 | **A função por bloco emite linhas, não labels; limiar de Otsu por bloco** (§8.1) | Rótulos de instância colidem entre blocos, e um limiar global exigiria ler a imagem inteira |
 
 ---
 
@@ -529,6 +530,12 @@ def segment_unit(source: UnitSource, cfg) -> pd.DataFrame:
 `core_regions(h, w, chunk, overlap)` enumera os retângulos-núcleo. **Não é um tiler** — o Dask faz o tiling. É o auxiliar de que a política de centróide precisa para saber a que núcleo pertence cada centróide, e é o alvo do teste de propriedade. A v3 deixou-a órfã ao delegar o tiling ao Dask; a v4 declara-a explicitamente como parte da política.
 
 Objetos que tocam a borda exterior da imagem completa marcam-se `touches_border`: contam para a contagem de células, excluem-se das estatísticas de morfologia porque estão truncados.
+
+**O limiar de Otsu é por bloco, e é daí que vem o ±1%.** Cada bloco calcula o seu próprio limiar sobre os seus próprios pixels, portanto uma célula encostada a uma fronteira pode ficar acima do limiar de um lado e abaixo do outro. Medido num campo real da `Week1_22141`: 307 células a chunk 256, 306 a 512, 304 a 1024 e a bloco único — 0,99% de amplitude, mesmo à beira da tolerância do §13.1.
+
+A alternativa é um limiar global, e é pior: exige uma passagem prévia sobre a imagem inteira para o calcular, o que num WSI é precisamente a leitura que este desenho existe para evitar. Trocaria a propriedade central da Fase 2 por um dígito de reprodutibilidade.
+
+A consequência a assumir é que **o `chunk` faz parte da identidade de uma corrida**. Duas corridas só são comparáveis com o mesmo valor — o que o §12 já garante, porque o `config_hash` inclui o `chunk_size`. A contagem não é uma função só da imagem; é uma função da imagem e do chunking, e está declarada como tal.
 
 ### 8.2 Camadas de análise
 

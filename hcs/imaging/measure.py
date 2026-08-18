@@ -40,6 +40,10 @@ _SHAPE_PROPERTIES: Final = (
 # What §9 aggregates per well, and what a `touches_border` object is excluded from.
 MORPHOLOGY_COLUMNS: Final = ("area", "perimeter", "eccentricity", "solidity")
 
+# §6.3: features carry a prefix so the science layer can find them by rule. The four
+# morphology columns above do not — they are the same whatever backend produced the mask.
+FEATURE_PREFIX: Final = "feat_"
+
 COLUMNS: Final = ("centroid_y", "centroid_x", *MORPHOLOGY_COLUMNS, "touches_border")
 
 
@@ -149,15 +153,21 @@ def _add_intensity(
     aligned = frame["label"].map(means)
     return frame.assign(
         **{
-            f"intensity_mean_{channel}": aligned,
-            f"intensity_integrated_{channel}": aligned * frame["area"],
+            f"{FEATURE_PREFIX}intensity_mean_{channel}": aligned,
+            f"{FEATURE_PREFIX}intensity_integrated_{channel}": aligned * frame["area"],
         }
     )
 
 
 def _intensity_columns(channels: tuple[str, ...]) -> list[str]:
+    """The `feat_*` half of the §6.3 schema.
+
+    The prefix is what lets §9 select features by rule instead of by a list that drifts:
+    the four morphology columns are backend-independent and named outright, everything
+    else is whatever the segmentation backend produces and is prefixed.
+    """
     return [
-        f"{prefix}_{channel}"
+        f"{FEATURE_PREFIX}{prefix}_{channel}"
         for channel in channels
         for prefix in ("intensity_mean", "intensity_integrated")
     ]
