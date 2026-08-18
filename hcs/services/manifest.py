@@ -24,7 +24,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from hcs.api.schemas import HcsFieldIn, ManifestIn, PlateIn, WellLayoutIn
+from hcs.api.schemas import HcsFieldIn, HcsManifestIn, PlateIn, WellLayoutIn, WsiManifestIn
 from hcs.db import (
     Batch,
     BatchUnit,
@@ -34,8 +34,9 @@ from hcs.db import (
     UnitKind,
     WellLayout,
     WorkUnit,
+    WsiSlide,
 )
-from hcs.identity import hcs_field_id
+from hcs.identity import hcs_field_id, wsi_slide_id
 from hcs.science.controls import control_type
 
 
@@ -51,7 +52,7 @@ class ManifestOutcome:
 
 
 def register_hcs_manifest(
-    session: Session, batch_id: uuid.UUID, manifest: ManifestIn
+    session: Session, batch_id: uuid.UUID, manifest: HcsManifestIn
 ) -> ManifestOutcome:
     """Register the fields of one plate into a batch. The caller commits."""
     plate_id, expected = _upsert_plate(session, manifest.plate)
@@ -250,3 +251,52 @@ def _refresh_total_units(session: Session, batch_id: uuid.UUID) -> None:
         select(func.count()).select_from(BatchUnit).where(BatchUnit.batch_id == batch_id)
     )
     session.execute(update(Batch).where(Batch.id == batch_id).values(total_units=total))
+
+
+def register_wsi_manifest(
+    session: Session, batch_id: uuid.UUID, manifest: WsiManifestIn
+) -> ManifestOutcome:
+    """Register slides into a batch. The caller commits.
+
+    Idempotent for the same reason the HCS rail is, by a shorter route: a slide's id is
+    `uuid5` of its content digest, so the same bytes are the same unit however they were
+    named or wherever they were found. Two paths to one slide register one work unit.
+
+    There is no `incomplete` here and there cannot be. A field is incomplete when it is
+    missing one of the channels its plate expects; a slide has no channels to be missing,
+    and the file is either readable or it is a permanent failure at processing time.
+    """
+    unit_ids = [wsi_slide_id(slide.sha256) for slide in manifest.slides]
+
+    session.execute(
+        insert(WorkUnit)
+        .values([{"id": uid, "kind": UnitKind.WSI_SLIDE} for uid in unit_ids])
+        .on_conflict_do_nothing(index_elements=["id"])
+    )
+    session.execute(
+        insert(WsiSlide)
+        .values(
+            [
+                {
+                    "work_unit_id": uid,
+                    "slide_uri": slide.uri,
+                    "content_sha256": slide.sha256.lower(),
+                    "mpp": slide.mpp,
+                    "level_count": slide.level_count,
+                    "width": slide.width,
+                    "height": slide.height,
+                    "size_bytes": slide.size_bytes,
+                }
+                for uid, slide in zip(unit_ids, manifest.slides, strict=True)
+            ]
+        )
+        .on_conflict_do_nothing(index_elements=["work_unit_id"])
+    )
+    registered = _add_to_batch(session, batch_id, unit_ids)
+    _refresh_total_units(session, batch_id)
+
+    return ManifestOutcome(
+        units_registered=registered,
+        duplicates_skipped=len(unit_ids) - registered,
+        incomplete=0,
+    )

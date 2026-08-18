@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hcs.db import HcsChannelFile, HcsField, Plate
+from hcs.db import HcsChannelFile, HcsField, Plate, WsiSlide
 
 
 class UnitNotFoundError(LookupError):
@@ -76,4 +76,34 @@ def load_hcs_field(session: Session, work_unit_id: uuid.UUID) -> HcsFieldSource:
         well=well,
         field_index=field_index,
         channels=channels,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WsiSlideSource:
+    """Everything the imaging layer needs about one slide."""
+
+    work_unit_id: uuid.UUID
+    slide_uri: str
+    content_sha256: str
+
+
+def load_wsi_slide(session: Session, work_unit_id: uuid.UUID) -> WsiSlideSource:
+    """Look up one slide's location.
+
+    No completeness check, because a slide has no parts to be missing. The equivalent
+    failure — a file that is not a slide, or a slide that is truncated — is OpenSlide's to
+    raise, and it raises it at processing time as a permanent failure.
+    """
+    row = session.execute(
+        select(WsiSlide.slide_uri, WsiSlide.content_sha256).where(
+            WsiSlide.work_unit_id == work_unit_id
+        )
+    ).one_or_none()
+    if row is None:
+        raise UnitNotFoundError(f"no WSI slide with id {work_unit_id}")
+
+    slide_uri, content_sha256 = row
+    return WsiSlideSource(
+        work_unit_id=work_unit_id, slide_uri=slide_uri, content_sha256=content_sha256
     )

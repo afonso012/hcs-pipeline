@@ -32,6 +32,8 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 21 | **`plate.wells` no manifesto, com `control_type` derivado no servidor** (§7.1, §9.1) | O layout entra pela API como tudo o resto, e nenhum cliente pode declarar um poço como controlo |
 | 22 | **A função por bloco emite linhas, não labels** (§8.1) | Rótulos de instância colidem entre blocos: o label 7 de dois blocos são células diferentes |
 | 23 | **Limiar de Otsu global, não por bloco** (§8.1) | Num bloco de fundo puro o Otsu parte o ruído ao meio — 368 objetos inventados num campo com 77 células |
+| 24 | **Manifesto WSI no mesmo endpoint, união discriminada por `kind`** (§7.1) | Um corpo WSI sem `slides` tem de ser 422 sobre `slides`, não queixa sobre `plate` |
+| 25 | **Lâmina encenada em disco local; medição no nível 0** (§7.1, §8.1) | O OpenSlide lê caminhos e procura dentro deles; e acima do nível 0 os downsamples da Aperio não são inteiros |
 
 ---
 
@@ -474,6 +476,47 @@ Unidades a que falte um canal ficam `INCOMPLETE` e não são enfileiradas. São 
 A solução não é uma consulta prévia. É dar à unidade um **`id` determinístico**: UUIDv5 sobre `(kind, barcode, well, field_index)`. Com isso, `INSERT ... ON CONFLICT (id) DO NOTHING` é idempotente em ambas as tabelas e nenhuma ordem produz órfãos. A identidade da unidade passa a ser função do seu conteúdo lógico e não de um contador — que é o mesmo princípio da linhagem (§12).
 
 `duplicates_skipped` na resposta é a contagem de conflitos de `id`.
+
+**O carril WSI usa o mesmo endpoint, distinguido pelo `kind`.**
+
+```http
+POST /v1/batches/{id}/manifest
+{
+  "kind": "WSI_SLIDE",
+  "slides": [
+    { "uri": "s3://raw/slides/Aperio/CMU-1.svs", "sha256": "00a3d5…",
+      "mpp": 0.499, "level_count": 3, "width": 46000, "height": 32914 }
+  ]
+}
+202 { "units_registered": 2, "duplicates_skipped": 0, "incomplete": 0 }
+```
+
+Uma lâmina não tem placa, poço nem canais — tem um digest, e **o digest é a identidade**:
+`uuid5(NS_HCS, "WSI_SLIDE|<sha256>")`. A mesma lâmina registada a partir de dois caminhos é
+uma unidade só, e nada tem de comparar caminhos para o saber. É a mesma idempotência que o
+carril HCS obtém de `(barcode, well, field_index)`, por uma via mais curta.
+
+O `incomplete` é sempre zero aqui e tem de ser: um campo fica incompleto por lhe faltar um
+canal que a placa espera, e uma lâmina não tem partes que possam faltar. O ficheiro é
+legível ou é uma falha permanente no processamento.
+
+A metadata ótica — `mpp`, número de níveis, dimensões — vem do OpenSlide a ler o ficheiro,
+nunca do nome nem de um valor por omissão. É por ela que todas as medições a jusante são
+escaladas, e um manifesto que a inventasse punha uma escala errada debaixo de tudo sem que
+nada mais à frente pudesse dar por isso.
+
+**A lâmina é encenada em disco local antes de ser aberta**, e isso é uma restrição e não uma
+preferência: o OpenSlide lê um caminho, não um fluxo, e *procura* dentro do ficheiro — lê os
+tiles de que a região precisa e salta o resto, que é exatamente a razão de um nível de
+gigapixels custar um bloco de memória. Dar-lhe um buffer seria segurar o ficheiro para
+evitar segurar a imagem, que é a troca ao contrário. Os bytes de uma lâmina passam pelo
+disco local; nada do tamanho da imagem passa pela memória, e o §21.3 mede essa distinção.
+
+**A medição é sempre no nível 0.** Os downsamples da Aperio não são inteiros — 4,000122 e
+16,000486 na `CMU-1` — portanto acima do nível 0 uma fronteira de bloco cai entre pixels do
+nível 0 e os blocos não encaixam. Não vale a pena corrigir: um núcleo tem ~10 px no nível 0
+e 0,6 px no nível 2, que não é sítio onde se segmentem núcleos. Os níveis reduzidos servem
+para o limiar (§8.1) e para contexto.
 
 **Modo B — upload direto em streaming.** Hash calculado *à medida* que os bytes passam para o MinIO, nunca em memória.
 **Modo C — URLs pré-assinados.** A API sai do caminho dos dados.

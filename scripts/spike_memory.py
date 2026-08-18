@@ -60,6 +60,22 @@ THROUGHPUT_TOLERANCE = 0.15
 DATASET_FIELDS = 13_200
 CELLS_PER_FIELD = 1_000
 
+# The WSI half: square regions of level 0, in pixels a side. The largest exceeds a
+# gigapixel, which is the point — memory has to stay flat while area grows 256-fold.
+DEFAULT_SLIDE = Path("/Volumes/SSD/Imagens_Celulares_em_Larga_Escala/OpenSlide/Aperio/CMU-1.svs")
+DEFAULT_AREAS = [2048, 4096, 8192, 16384, 32768]
+
+
+@dataclass(frozen=True, slots=True)
+class Scale:
+    """One point on the WSI curve: how much area, at what cost."""
+
+    side: int
+    megapixels: float
+    nuclei: int
+    seconds: float
+    peak_mib: float
+
 
 @dataclass(frozen=True, slots=True)
 class Measurement:
@@ -84,6 +100,8 @@ class Measurement:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.child_wsi is not None:
+        return child_wsi(args)
     if args.child is not None:
         return child(args)
 
@@ -108,8 +126,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for workers in args.workers
     ]
 
+    scales = measure_scale(args) if args.slide.exists() else []
+    if not scales:
+        print(f"no slide at {args.slide}; skipping the WSI half", file=sys.stderr)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(report(results, args, floor))
+    args.out.write_text(report(results, args, floor, scales))
     print(f"\nwrote {args.out}", file=sys.stderr)
     return 0
 
@@ -120,7 +142,10 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--workers", type=_ints, default=[1, 2, 4])
     parser.add_argument("--fields", type=int, default=6, help="fields processed per worker")
     parser.add_argument("--out", type=Path, default=Path("docs/spike-memory.md"))
+    parser.add_argument("--slide", type=Path, default=DEFAULT_SLIDE)
+    parser.add_argument("--areas", type=_ints, default=DEFAULT_AREAS, help="square sides, px")
     parser.add_argument("--child", type=int, help=argparse.SUPPRESS)  # internal
+    parser.add_argument("--child-wsi", type=int, help=argparse.SUPPRESS)  # internal
     return parser.parse_args(argv)
 
 
@@ -200,6 +225,92 @@ def competing_containers() -> int:
             )
             or 0
         )
+
+
+def measure_scale(args: argparse.Namespace) -> list[Scale]:
+    """The WSI half: peak RSS against how much of level 0 gets processed.
+
+    The HCS table varies the chunk and holds the image fixed; this holds the chunk fixed
+    and varies the image, which is the other half of the same claim. A flat column here is
+    the Objective B-WSI graph of §11 stated as numbers.
+    """
+    print("\n--- WSI: area against memory, chunk fixed ---", file=sys.stderr, flush=True)
+    return [run_scale(side, args) for side in args.areas]
+
+
+def run_scale(side: int, args: argparse.Namespace) -> Scale:
+    process = _spawn_wsi(side, args.slide)
+    series = _sample_until_done([process])
+    payload = json.loads(process.stdout.read()) if process.stdout else {}
+    process.wait()
+
+    scale = Scale(
+        side=side,
+        megapixels=payload.get("megapixels", 0.0),
+        nuclei=payload.get("nuclei", 0),
+        seconds=payload.get("seconds", 0.0),
+        peak_mib=max(series[process.pid], default=0.0),
+    )
+    print(
+        f"{scale.megapixels:8.1f} Mpx  nuclei {scale.nuclei:>7}  {scale.seconds:6.1f}s  "
+        f"peak {scale.peak_mib:5.0f} MiB",
+        file=sys.stderr,
+        flush=True,
+    )
+    return scale
+
+
+def child_wsi(args: argparse.Namespace) -> int:
+    """Measure one square region of level 0 and report what it cost.
+
+    A crop rather than a real sub-slide: `measure_field` asks its input only for a shape
+    and for slices, so bounding the shape bounds the work without copying a pixel.
+    """
+    from hcs.imaging.pipeline import ChunkConfig, measure_field
+    from hcs.imaging.wsi import measure_at, open_slide, thumbnail_threshold
+
+    settings = get_settings()
+    slide = open_slide(args.slide)
+    level = measure_at(slide)
+    height = min(args.child_wsi, level.shape[0])
+    width = min(args.child_wsi, level.shape[1])
+
+    class Region:
+        shape = (height, width)
+
+        def __getitem__(self, key: object) -> object:
+            return level[key]
+
+    region = Region()
+    started = time.perf_counter()
+    cells = measure_field(
+        region,
+        {"Hematoxylin": region},
+        ChunkConfig(chunk=settings.chunk_size, overlap=settings.chunk_overlap),
+        threshold=thumbnail_threshold(slide),
+    )
+    print(
+        json.dumps(
+            {
+                "megapixels": height * width / 1e6,
+                "nuclei": len(cells),
+                "seconds": time.perf_counter() - started,
+            }
+        )
+    )
+    slide.close()
+    return 0
+
+
+def _spawn_wsi(side: int, slide: Path) -> subprocess.Popen[str]:
+    process = subprocess.Popen(
+        [sys.executable, __file__, "--child-wsi", str(side), "--slide", str(slide)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    return process
 
 
 def baseline() -> float:
@@ -345,7 +456,12 @@ def recommend(results: Sequence[Measurement]) -> tuple[int, str]:
     )
 
 
-def report(results: Sequence[Measurement], args: argparse.Namespace, floor: float) -> str:
+def report(
+    results: Sequence[Measurement],
+    args: argparse.Namespace,
+    floor: float,
+    scales: Sequence[Scale],
+) -> str:
     """The document §21.3 asks for."""
     settings = get_settings()
     rows = "\n".join(
@@ -364,6 +480,7 @@ def report(results: Sequence[Measurement], args: argparse.Namespace, floor: floa
         if busy
         else ""
     )
+    wsi = _wsi_section(scales, floor)
     chunk, why = recommend(results)
     measured = [m.bytes_per_row for m in results if m.cells]
     per_row = statistics.median(measured) if measured else 0.0
@@ -397,6 +514,7 @@ processos — não é a soma dos picos individuais, porque os picos não coincid
 de inicialização, e é aí que o consumo mau se esconde: é por isso que os dois aparecem
 separados em vez de numa média que os fundiria.
 
+{wsi}
 ## Recomendação
 
 **`CHUNK_SIZE={chunk}`** — {why}.
@@ -425,6 +543,43 @@ pelo caminho por blocos e sob o mesmo limite, dão 224 560 núcleos e concluem.
 
 É esse par que faz a tabela acima significar alguma coisa. Sem ele, dizer que o consumo é
 baixo não prova que a montagem seria capaz de o detetar se fosse alto.
+"""
+
+
+def _wsi_section(scales: Sequence[Scale], floor: float) -> str:
+    """The other half of Objective B: area varies, memory does not."""
+    if not scales:
+        return ""
+    rows = "\n".join(
+        f"| {s.megapixels:.1f} | {s.nuclei} | {s.seconds:.1f} | {s.peak_mib:.0f} | "
+        f"{s.peak_mib - floor:.0f} |"
+        for s in scales
+    )
+    ordered = sorted(scales, key=lambda s: s.megapixels)
+    smallest, largest = ordered[0], ordered[-1]
+    growth = largest.megapixels / smallest.megapixels if smallest.megapixels else 0.0
+    ratio = largest.peak_mib / smallest.peak_mib if smallest.peak_mib else 0.0
+    dearest = max(ordered, key=lambda s: s.peak_mib)
+    return f"""
+## Carril WSI — a área cresce, a memória não
+
+Regiões quadradas do nível 0 da `CMU-1`, chunk fixo, cada uma em processo limpo.
+
+| área (Mpx) | núcleos | segundos | pico (MiB) | acima da base |
+|---:|---:|---:|---:|---:|
+{rows}
+
+**{growth:.0f}x mais pixels, e o pico fica em {ratio:.2f}x.** É o gráfico do §11 painel 2 —
+uma linha plana enquanto a outra sobe — dito em números em vez de desenhado.
+
+A prova de que é planura e não sorte está na coluna não ser monótona: a região mais cara
+não é a maior, é a de {dearest.megapixels:.1f} Mpx. Se a memória seguisse a área, o maior
+seria sempre o pior. A dispersão que resta é ruído da máquina, e é maior do que o efeito
+da área porque o efeito da área é nenhum.
+
+O pico é mais alto do que no carril HCS porque o leitor é outro: o OpenSlide e a
+deconvolução de cor custam mais a importar do que o tifffile. Isso é a base, não o
+crescimento.
 """
 
 

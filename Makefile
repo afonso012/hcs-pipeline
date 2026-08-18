@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry spike negative-control bench chaos golden
+        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control bench chaos golden
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -115,6 +115,10 @@ seed: ## Upload and register the development plates (PLATES=... BATCH_ID=... to 
 
 seed-dry: ## Same, but check the CSV and the files on disk without uploading anything
 	uv run python scripts/seed_bbbc021.py --root "$(BBBC021_ROOT)" --plates "$(PLATES)" --dry-run
+
+seed-slides: ## Upload and register whole-slide images (SLIDES=... to pick a subset)
+	uv run python scripts/seed_slides.py --root "$(WSI_ROOT)" --external-ref wsi-dev \
+		$(if $(SLIDES),--only $(SLIDES)) $(if $(BATCH_ID),--batch-id $(BATCH_ID))
 
 # --- measurement (Phases 2, 4, 5) -----------------------------------------------------------
 

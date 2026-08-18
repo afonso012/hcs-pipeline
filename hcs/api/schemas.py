@@ -95,10 +95,47 @@ class HcsFieldIn(BaseModel):
     channels: dict[str, ChannelFileIn] = Field(min_length=1)
 
 
-class ManifestIn(BaseModel):
+class WsiSlideIn(BaseModel):
+    """One whole-slide image (§6.2, §7.1).
+
+    A slide has no plate, no well and no channels, which is why it is a subtype rather
+    than a set of nullable columns on `work_units` (ADR-006). What it has instead is a
+    digest, and that digest *is* its identity: `uuid5(NS_HCS, "WSI_SLIDE|<sha256>")`. The
+    same slide registered from two paths is one unit, and registering it twice is
+    registering it once — the same property the HCS rail gets from
+    `(barcode, well, field_index)`.
+
+    The optical metadata is optional because it is the slide's to declare, not the
+    caller's to invent: OpenSlide reads `mpp` and the level count from the file itself,
+    and a manifest that guessed would put a wrong scale bar under every measurement.
+    """
+
+    uri: str = Field(min_length=1, examples=["s3://raw/slides/Aperio/CMU-1.svs"])
+    sha256: Sha256
+    mpp: float | None = Field(default=None, gt=0, description="Microns per pixel at level 0")
+    level_count: int | None = Field(default=None, gt=0)
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
+class HcsManifestIn(BaseModel):
     kind: Literal[UnitKind.HCS_FIELD]
     plate: PlateIn
     units: list[HcsFieldIn] = Field(min_length=1, max_length=5000)
+
+
+class WsiManifestIn(BaseModel):
+    kind: Literal[UnitKind.WSI_SLIDE]
+    # Smaller than the HCS ceiling on purpose: a slide is a work unit measured in
+    # gigapixels, and a body naming five thousand of them describes a run nobody meant.
+    slides: list[WsiSlideIn] = Field(min_length=1, max_length=500)
+
+
+# One endpoint, two rails, told apart by `kind` rather than by which fields happen to be
+# present. A discriminated union means a WSI body missing `slides` is a 422 naming
+# `slides`, not a confusing complaint about `plate`.
+ManifestIn = Annotated[HcsManifestIn | WsiManifestIn, Field(discriminator="kind")]
 
 
 class ManifestOut(BaseModel):

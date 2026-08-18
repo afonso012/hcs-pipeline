@@ -17,12 +17,14 @@ from hcs.db import (
     HcsField,
     Run,
     RunStatus,
+    UnitKind,
     UnitRun,
     UnitStatus,
     WellLayout,
     WorkUnit,
+    WsiSlide,
 )
-from hcs.identity import hcs_field_id
+from hcs.identity import hcs_field_id, wsi_slide_id
 from hcs.science.controls import ControlType
 
 pytestmark = pytest.mark.integration
@@ -349,6 +351,96 @@ class TestWellLayout:
         api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(unit))
 
         assert self.layout_of(clean_db) == {"B02": ("DMSO", ControlType.NEGATIVE)}
+
+
+class TestWsiManifest:
+    """The second rail through the same endpoint (§7.1).
+
+    A slide has no plate, no wells and no channels. What it has is a digest, and the
+    digest is the identity — which gives this rail the same idempotency the HCS rail gets
+    from `(barcode, well, field_index)`, by a shorter route.
+    """
+
+    @staticmethod
+    def slides(*digests: str) -> dict[str, Any]:
+        return {
+            "kind": "WSI_SLIDE",
+            "slides": [
+                {"uri": f"s3://raw/slides/{d[:8]}.svs", "sha256": d, "level_count": 3}
+                for d in digests
+            ],
+        }
+
+    def test_registering_slides_counts_them_on_the_batch(self, api_client: Any) -> None:
+        batch_id = create_batch(api_client)
+
+        response = api_client.post(
+            f"/v1/batches/{batch_id}/manifest", json=self.slides("a" * 64, "b" * 64)
+        )
+
+        assert response.status_code == 202
+        assert response.json() == {"units_registered": 2, "duplicates_skipped": 0, "incomplete": 0}
+        assert api_client.get(f"/v1/batches/{batch_id}").json()["total_units"] == 2
+
+    def test_the_unit_id_is_the_digest(self, api_client: Any, clean_db: Engine) -> None:
+        """§7.1: `uuid5(NS_HCS, "WSI_SLIDE|<sha256>")`. A seed can compute it offline, and
+        that is what makes the manifest re-runnable rather than merely deduplicated."""
+        batch_id = create_batch(api_client)
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=self.slides("c" * 64))
+
+        with Session(clean_db) as session:
+            stored = session.scalars(select(WorkUnit.id)).all()
+            kinds = session.scalars(select(WorkUnit.kind)).all()
+
+        assert list(stored) == [wsi_slide_id("c" * 64)]
+        assert list(kinds) == [UnitKind.WSI_SLIDE]
+
+    def test_the_same_bytes_under_two_names_are_one_unit(
+        self, api_client: Any, clean_db: Engine
+    ) -> None:
+        """The property that identity-by-content buys. A slide copied to a second path,
+        or re-uploaded under a tidier name, is not a second slide — and nothing has to
+        compare paths to know that."""
+        batch_id = create_batch(api_client)
+        digest = "d" * 64
+        first = self.slides(digest)
+        second = {
+            "kind": "WSI_SLIDE",
+            "slides": [{"uri": "s3://raw/elsewhere.svs", "sha256": digest}],
+        }
+
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=first)
+        again = api_client.post(f"/v1/batches/{batch_id}/manifest", json=second).json()
+
+        assert again == {"units_registered": 0, "duplicates_skipped": 1, "incomplete": 0}
+        with Session(clean_db) as session:
+            assert session.scalar(select(func.count()).select_from(WsiSlide)) == 1
+
+    def test_a_wsi_body_is_judged_as_a_wsi_body(self, api_client: Any) -> None:
+        """What the discriminated union buys. Without it, a WSI manifest missing `slides`
+        would be measured against the HCS schema and rejected for lacking a `plate`,
+        which is advice about the wrong rail."""
+        batch_id = create_batch(api_client)
+
+        response = api_client.post(
+            f"/v1/batches/{batch_id}/manifest", json={"kind": "WSI_SLIDE", "slides": []}
+        )
+
+        assert response.status_code == 422
+        assert "slides" in str(response.json())
+
+    def test_both_rails_can_share_one_batch(self, api_client: Any, clean_db: Engine) -> None:
+        """`work_units` is thin and the queue does not know about plates or slides
+        (ADR-006), so a batch holding both is not a special case."""
+        batch_id = create_batch(api_client)
+
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=manifest(field("B04", 1)))
+        api_client.post(f"/v1/batches/{batch_id}/manifest", json=self.slides("e" * 64))
+
+        assert api_client.get(f"/v1/batches/{batch_id}").json()["total_units"] == 2
+        with Session(clean_db) as session:
+            kinds = sorted(session.scalars(select(WorkUnit.kind)).all())
+        assert kinds == sorted([UnitKind.HCS_FIELD, UnitKind.WSI_SLIDE])
 
 
 class TestSubmit:

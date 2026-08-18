@@ -7,9 +7,20 @@ from collections.abc import Sequence
 from fastapi import APIRouter, HTTPException, status
 
 from hcs.api.deps import SessionDep, SettingsDep
-from hcs.api.schemas import BatchCreate, BatchOut, ManifestIn, ManifestOut, SubmitOut
+from hcs.api.schemas import (
+    BatchCreate,
+    BatchOut,
+    HcsManifestIn,
+    ManifestIn,
+    ManifestOut,
+    SubmitOut,
+)
 from hcs.db import Batch
-from hcs.services.manifest import PlateMismatchError, register_hcs_manifest
+from hcs.services.manifest import (
+    PlateMismatchError,
+    register_hcs_manifest,
+    register_wsi_manifest,
+)
 from hcs.services.runs import BatchNotFoundError, EmptyBatchError, submit_batch, units_in_batch
 
 logger = logging.getLogger(__name__)
@@ -55,7 +66,11 @@ def register_manifest(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such batch: {batch_id}")
 
     try:
-        outcome = register_hcs_manifest(session, batch_id, manifest)
+        outcome = (
+            register_hcs_manifest(session, batch_id, manifest)
+            if isinstance(manifest, HcsManifestIn)
+            else register_wsi_manifest(session, batch_id, manifest)
+        )
     except PlateMismatchError as exc:
         # 409, not 422: the body is well formed, it just contradicts what the plate
         # already says. Accepting it would redefine "complete" for fields already

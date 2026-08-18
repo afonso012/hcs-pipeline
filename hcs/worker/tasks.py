@@ -24,8 +24,13 @@ from sqlalchemy import CursorResult, Engine, create_engine, select, update
 from sqlalchemy.orm import Session
 
 from hcs.config import get_settings
-from hcs.db import Run, RunStatus, UnitRun, UnitStatus
-from hcs.services.units import IncompleteUnitError, load_hcs_field
+from hcs.db import Run, RunStatus, UnitKind, UnitRun, UnitStatus, WorkUnit
+from hcs.services.units import (
+    IncompleteUnitError,
+    UnitNotFoundError,
+    load_hcs_field,
+    load_wsi_slide,
+)
 from hcs.storage import s3_client
 from hcs.worker.celery_app import celery_app
 
@@ -73,27 +78,83 @@ def perform(work_unit_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
     make `POST /submit` fail with an ImportError for a library the API has no business
     holding. The worker pays the cost once, on its first unit.
     """
+    from hcs.imaging.writer import write_cell_metrics
+
+    settings = get_settings()
+    with session_scope() as session:
+        kind = session.scalar(select(WorkUnit.kind).where(WorkUnit.id == work_unit_id))
+    if kind is None:
+        raise UnitNotFoundError(f"no work unit with id {work_unit_id}")
+
+    cells = _measure_hcs(work_unit_id) if kind is UnitKind.HCS_FIELD else _measure_wsi(work_unit_id)
+    key = write_cell_metrics(s3_client(), settings.bucket_results, cells, run_id, work_unit_id)
+
+    return {
+        "kind": kind.value,
+        "cells": len(cells),
+        "touching_border": int(cells["touches_border"].sum()),
+        "results_key": key,
+    }
+
+
+def _measure_hcs(work_unit_id: uuid.UUID) -> Any:
+    """One HCS field: three channels fetched whole, segmented on the DNA channel (§8.2)."""
     from hcs.imaging.pipeline import ChunkConfig, measure_field
     from hcs.imaging.source import load_field, segmentation_channel
-    from hcs.imaging.writer import write_cell_metrics
 
     settings = get_settings()
     with session_scope() as session:
         field = load_hcs_field(session, work_unit_id)
 
     pixels = load_field(s3_client(), field.channels)
-    cells = measure_field(
+    return measure_field(
         segmentation_channel(pixels, settings.segmentation_channel),
         pixels,
         ChunkConfig(chunk=settings.chunk_size, overlap=settings.chunk_overlap),
     )
-    key = write_cell_metrics(s3_client(), settings.bucket_results, cells, run_id, work_unit_id)
 
-    return {
-        "cells": len(cells),
-        "touching_border": int(cells["touches_border"].sum()),
-        "results_key": key,
-    }
+
+def _measure_wsi(work_unit_id: uuid.UUID) -> Any:
+    """One slide, level 0, block by block.
+
+    The slide is staged to a local file first, and that is a constraint rather than a
+    preference: OpenSlide reads a path, not a stream, and it seeks — it reads the tiles a
+    region needs and skips the rest, which is the whole reason a gigapixel level costs a
+    block of memory. Handing it a buffer would mean holding the file to avoid holding the
+    image, which is the wrong trade in the wrong direction.
+
+    So one slide's bytes land on local disk, and nothing the size of the image ever lands
+    in memory. §21.3's negative control is the measurement of that distinction: the same
+    level loaded whole is OOMKilled at 1536m, and this path finishes.
+
+    The temporary file is deleted whatever happens. A worker that leaked one slide per
+    unit would fill its container's writable layer long before it ran out of memory.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from hcs.imaging.pipeline import ChunkConfig, measure_field
+    from hcs.imaging.wsi import measure_at, open_slide, thumbnail_threshold
+    from hcs.storage import read_object
+
+    settings = get_settings()
+    with session_scope() as session:
+        slide_source = load_wsi_slide(session, work_unit_id)
+
+    with tempfile.NamedTemporaryFile(suffix=Path(slide_source.slide_uri).suffix) as staged:
+        staged.write(read_object(s3_client(), slide_source.slide_uri))
+        staged.flush()
+        slide = open_slide(staged.name)
+        try:
+            level = measure_at(slide)
+            return measure_field(
+                level,
+                {"Hematoxylin": level},
+                ChunkConfig(chunk=settings.chunk_size, overlap=settings.chunk_overlap),
+                threshold=thumbnail_threshold(slide),
+            )
+        finally:
+            slide.close()
 
 
 @celery_app.task(
