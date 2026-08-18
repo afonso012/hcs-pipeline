@@ -17,7 +17,7 @@ import pytest
 
 from hcs.geometry import CoreRegion, core_regions
 from hcs.imaging.measure import measure_block
-from hcs.imaging.pipeline import ChunkConfig, measure_field
+from hcs.imaging.pipeline import ChunkConfig, global_threshold, measure_field
 from hcs.imaging.segment import SegmentationConfig, segment_chunk
 from tests.test_segment import discs
 
@@ -71,6 +71,57 @@ class TestCountIsInvariantToChunking:
         objects exist. If it moves the count, objects are being owned twice or not at
         all."""
         assert count_at(image, 128, overlap) == len(CENTRES)
+
+
+class TestEmptyBlocks:
+    """The regression the synthetic grid could not catch.
+
+    Every disc layout above fills the image evenly, so no block is ever pure background,
+    and per-block Otsu looked correct at 1% error. On a real sparse field it was 4.4x out:
+    `Week1_22161 D03 s2` gave 341 cells at chunk 256 against 77 in a single block, because
+    two empty blocks got a threshold in the middle of their own noise and returned 210 and
+    158 objects between them.
+
+    A cytotoxic compound is exactly what produces sparse fields, so the error was largest
+    in the wells the assay is about.
+    """
+
+    @staticmethod
+    def sparse() -> Image:
+        """Cells in one corner, three quarters of the image empty but not constant."""
+        rng = np.random.default_rng(20260812)
+        image = discs((SIZE, SIZE), [(60, 60), (60, 140), (140, 60), (140, 140)], radius=RADIUS)
+        return image + rng.normal(200.0, 20.0, image.shape)
+
+    @pytest.mark.parametrize("chunk", [128, 256, 512])
+    def test_a_sparse_image_counts_the_same_at_every_chunk_size(self, chunk: int) -> None:
+        image = self.sparse()
+
+        assert count_at(image, chunk) == count_at(image, SIZE * 2)
+
+    def test_a_background_only_block_yields_nothing_under_a_global_threshold(self) -> None:
+        """The mechanism, stated directly. The same block segmented against its own Otsu
+        finds objects in the noise; against the whole image's, it finds none."""
+        image = self.sparse()
+        empty = image[SIZE - 200 : SIZE, SIZE - 200 : SIZE]
+        cfg = SegmentationConfig()
+
+        assert segment_chunk(empty, cfg).any()  # its own threshold splits the noise
+        assert not segment_chunk(empty, cfg, global_threshold(image)).any()
+
+    def test_the_threshold_can_be_supplied_from_outside(self) -> None:
+        """How the WSI rail avoids reading level 0: the level comes from a pyramid page
+        and is handed in, rather than computed from the array being processed."""
+        image = self.sparse()
+
+        assert count_at(image, 128) == len(
+            measure_field(
+                image,
+                {"DNA": image},
+                ChunkConfig(chunk=128, overlap=32),
+                threshold=global_threshold(image),
+            )
+        )
 
 
 class TestNoObjectIsCountedTwice:

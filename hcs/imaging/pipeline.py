@@ -31,6 +31,7 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from skimage.filters import gaussian, threshold_otsu
 
 from hcs.geometry import CoreRegion, core_regions
 from hcs.imaging.measure import measure_block
@@ -66,6 +67,7 @@ def measure_field(
     intensities: Mapping[str, Sliceable],
     chunks: ChunkConfig,
     segmentation_config: SegmentationConfig | None = None,
+    threshold: float | None = None,
 ) -> pd.DataFrame:
     """Segment and measure one image, block by block.
 
@@ -76,6 +78,9 @@ def measure_field(
             `segmentation` in shape.
         chunks: Block geometry.
         segmentation_config: Knobs of the classic path; defaults if omitted.
+        threshold: The foreground level, taken from the whole image. Computed here when
+            omitted. The WSI rail passes one derived from a low-resolution pyramid level
+            instead, which is how a slide gets a global threshold without reading level 0.
 
     Returns:
         One row per cell, in full-image coordinates, ordered by block and then by the
@@ -84,9 +89,10 @@ def measure_field(
     height, width = segmentation.shape[0], segmentation.shape[1]
     _reject_mismatched_channels(intensities, (height, width))
     seg_cfg = segmentation_config or SegmentationConfig()
+    level = global_threshold(segmentation, seg_cfg) if threshold is None else threshold
 
     frames = [
-        _measure_one(region, segmentation, intensities, (height, width), seg_cfg)
+        _measure_one(region, segmentation, intensities, (height, width), seg_cfg, level)
         for region in core_regions(height, width, chunks.chunk, chunks.overlap)
     ]
     return _number(pd.concat(frames, ignore_index=True))
@@ -103,12 +109,41 @@ def _number(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.assign(label=np.arange(1, len(frame) + 1, dtype=np.int32))
 
 
+def global_threshold(segmentation: Sliceable, cfg: SegmentationConfig | None = None) -> float:
+    """The foreground level, computed once over the whole image.
+
+    Smoothed first, with the same sigma the blocks use. A threshold has to be computed on
+    the signal it will be compared against: the raw image of a synthetic disc is a
+    two-spike histogram where Otsu lands just above zero, and comparing the *smoothed*
+    pixels against that level swallows the entire blur halo — a disc of intensity 1000
+    came back with a mean of 655. Real images are noisy enough that the two agree closely,
+    which is exactly why this would have gone unnoticed.
+
+    This exists because the obvious alternative is badly wrong. Otsu per block splits
+    whatever it is given into two classes, and a block containing only background gets
+    split down the middle of the noise — on `Week1_22161 D03 s2`, two empty blocks out of
+    twenty invented 368 objects where the image held 77 cells. A per-block threshold does
+    not make the count noisy; it makes it meaningless on any field with an empty corner,
+    which is most of a plate under a cytotoxic compound.
+
+    It reads the whole array, and on this rail that costs nothing: a BBBC021 channel is
+    2.5 MB. A slide is not read this way — the WSI rail computes its level from a
+    low-resolution pyramid page and hands it to `measure_field`, which is what every
+    whole-slide pipeline does and is why the pyramid exists.
+    """
+    sigma = (cfg or SegmentationConfig()).sigma
+    return float(
+        threshold_otsu(gaussian(np.asarray(segmentation), sigma=sigma, preserve_range=True))
+    )
+
+
 def _measure_one(
     region: CoreRegion,
     segmentation: Sliceable,
     intensities: Mapping[str, Sliceable],
     image_shape: tuple[int, int],
     seg_cfg: SegmentationConfig,
+    threshold: float,
 ) -> pd.DataFrame:
     """One block: read it, segment it, keep what this core owns.
 
@@ -118,7 +153,7 @@ def _measure_one(
     """
     y0, x0, y1, x1 = region.block
     block = _read(segmentation, y0, x0, y1, x1)
-    labels = segment_chunk(block, seg_cfg)
+    labels = segment_chunk(block, seg_cfg, threshold)
     pixels = {name: _read(array, y0, x0, y1, x1) for name, array in intensities.items()}
     return measure_block(labels, pixels, region, image_shape)
 

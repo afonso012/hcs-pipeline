@@ -30,7 +30,8 @@ Projeto de aprendizagem. Não se destina a produção clínica.
 | 19 | **`plate_qc` por readout, com Z′ bruto** (§6.4, §9.3) | O Z′ sobre o readout normalizado não consegue avaliar a própria normalização |
 | 20 | **`image_digest` injetado no arranque** (§12) | Uma imagem não pode conter o seu próprio digest; lê-se depois do build |
 | 21 | **`plate.wells` no manifesto, com `control_type` derivado no servidor** (§7.1, §9.1) | O layout entra pela API como tudo o resto, e nenhum cliente pode declarar um poço como controlo |
-| 22 | **A função por bloco emite linhas, não labels; limiar de Otsu por bloco** (§8.1) | Rótulos de instância colidem entre blocos, e um limiar global exigiria ler a imagem inteira |
+| 22 | **A função por bloco emite linhas, não labels** (§8.1) | Rótulos de instância colidem entre blocos: o label 7 de dois blocos são células diferentes |
+| 23 | **Limiar de Otsu global, não por bloco** (§8.1) | Num bloco de fundo puro o Otsu parte o ruído ao meio — 368 objetos inventados num campo com 77 células |
 
 ---
 
@@ -531,11 +532,19 @@ def segment_unit(source: UnitSource, cfg) -> pd.DataFrame:
 
 Objetos que tocam a borda exterior da imagem completa marcam-se `touches_border`: contam para a contagem de células, excluem-se das estatísticas de morfologia porque estão truncados.
 
-**O limiar de Otsu é por bloco, e é daí que vem o ±1%.** Cada bloco calcula o seu próprio limiar sobre os seus próprios pixels, portanto uma célula encostada a uma fronteira pode ficar acima do limiar de um lado e abaixo do outro. Medido num campo real da `Week1_22141`: 307 células a chunk 256, 306 a 512, 304 a 1024 e a bloco único — 0,99% de amplitude, mesmo à beira da tolerância do §13.1.
+**O limiar é global, calculado uma vez por imagem. Por bloco não funciona, e a diferença não é de grau.**
 
-A alternativa é um limiar global, e é pior: exige uma passagem prévia sobre a imagem inteira para o calcular, o que num WSI é precisamente a leitura que este desenho existe para evitar. Trocaria a propriedade central da Fase 2 por um dígito de reprodutibilidade.
+O Otsu está definido para encontrar a melhor separação em duas classes daquilo que lhe derem. Não tem forma de responder "aqui não há nada". Num bloco de fundo puro parte o ruído ao meio e devolve objetos.
 
-A consequência a assumir é que **o `chunk` faz parte da identidade de uma corrida**. Duas corridas só são comparáveis com o mesmo valor — o que o §12 já garante, porque o `config_hash` inclui o `chunk_size`. A contagem não é uma função só da imagem; é uma função da imagem e do chunking, e está declarada como tal.
+Medido no campo `Week1_22161 D03 s2`: dois blocos vazios em vinte, com limiares de 528 e 496 contra o global de 1248, produziram **210 e 158 objetos** — numa imagem com 77 células reais. A contagem a chunk 256 dava 341 contra 77 num bloco único, **4,4×**.
+
+Vale a pena registar como isto quase passou. A primeira medição foi feita num campo denso, onde nenhum bloco é fundo puro, e deu 0,99% de amplitude — dentro da tolerância do §13.1, plausível, e errada. Os discos sintéticos dos testes tinham o mesmo defeito: preenchem a imagem por igual. **O erro é maior precisamente nos campos esparsos, que são os dos compostos citotóxicos** — ou seja, nos poços de que o ensaio trata.
+
+A objeção contra o limiar global era que exigiria ler a imagem inteira. Não exige. No carril HCS o canal tem 2,5 MB. No carril WSI existe a pirâmide: o limiar calcula-se num nível de baixa resolução e entra no `measure_field` como parâmetro. Ler uma miniatura não é ler o nível 0, e é o que qualquer pipeline de lâminas faz.
+
+O limiar calcula-se sobre a imagem **suavizada**, com o mesmo sigma dos blocos. Um limiar tem de ser calculado sobre o sinal contra o qual vai ser comparado; medido sobre a imagem crua, um disco sintético de 0/1000 dá um histograma de duas barras onde o Otsu cai junto ao zero, e comparar os pixels suavizados contra esse nível engole a auréola do desfoque inteira.
+
+Com o limiar global a contagem passa a ser **exatamente** invariante ao chunk — 0,0% de amplitude em três campos reais a 256, 512, 1024 e bloco único. O `chunk` continua no `config_hash` (§12) porque continua a decidir memória e débito, mas já não decide o número.
 
 ### 8.2 Camadas de análise
 

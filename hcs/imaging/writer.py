@@ -50,7 +50,7 @@ def write_cell_metrics(
     and the reconciliation sweep of §16.4 has to be able to tell them apart.
     """
     key = object_key(run_id, work_unit_id)
-    body = _serialise(_conform(cells, run_id, work_unit_id))
+    body = serialise_cell_metrics(cells, run_id, work_unit_id)
 
     # Write beside the destination, then replace it. An interrupted upload leaves a stray
     # temporary object rather than a truncated file that reads as a short unit.
@@ -59,6 +59,18 @@ def write_cell_metrics(
     s3.copy_object(Bucket=bucket, Key=key, CopySource={"Bucket": bucket, "Key": staging})
     s3.delete_object(Bucket=bucket, Key=staging)
     return key
+
+
+def serialise_cell_metrics(
+    cells: pd.DataFrame, run_id: uuid.UUID, work_unit_id: uuid.UUID
+) -> bytes:
+    """The bytes `write_cell_metrics` would upload, without uploading them.
+
+    Public because §21.3 has to measure Parquet bytes per row — the number ADR-007 rests
+    on, since 13.2 million rows times an unknown size is not a plan — and measuring it
+    through the writer would fill the results bucket with a benchmark.
+    """
+    return _serialise(_conform(cells, run_id, work_unit_id))
 
 
 def _conform(cells: pd.DataFrame, run_id: uuid.UUID, work_unit_id: uuid.UUID) -> pd.DataFrame:

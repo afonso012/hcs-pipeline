@@ -49,25 +49,34 @@ class SegmentationConfig:
 
 
 def segment_chunk(
-    block: npt.NDArray[np.floating | np.integer], cfg: SegmentationConfig
+    block: npt.NDArray[np.floating | np.integer],
+    cfg: SegmentationConfig,
+    threshold: float | None = None,
 ) -> LabelArray:
     """Label the objects in one block. Background is 0, objects are 1..n.
 
+    `threshold` should come from the whole image. Omitting it falls back to Otsu on this
+    block alone, which is only safe when the block is known to contain signal, because
+    **Otsu on a block of pure background splits the noise down the middle**. That is not a
+    defect of the implementation: Otsu is defined to find the best two-class split of
+    whatever it is given, and it has no way to answer "there is nothing here".
+
+    Measured on a real BBBC021 field, `Week1_22161 D03 s2`: two empty blocks out of twenty
+    produced 210 and 158 objects between them, against 77 real cells in the whole image.
+
     Returns an all-zero array for a block with nothing in it. A block of constant
-    intensity is an ordinary case, not a corrupt one — an empty well, or the dark margin
-    of a slide — and Otsu on a constant array returns that constant, which would
-    otherwise threshold every pixel into one enormous object.
+    intensity is an ordinary case rather than a corrupt one — an empty well, or the dark
+    margin of a slide.
     """
     if block.size == 0 or block.min() == block.max():
         return np.zeros(block.shape, dtype=LABEL_DTYPE)
 
     smoothed = gaussian(block, sigma=cfg.sigma, preserve_range=True)
+    level = threshold_otsu(smoothed) if threshold is None else threshold
     # `max_size` removes objects of area *less than or equal to* its value, where the
     # `min_size` it replaced removed those strictly below. Passing `min_size - 1` keeps
     # the threshold meaning what its name says: an object of exactly `min_size` survives.
-    foreground = remove_small_objects(
-        smoothed > threshold_otsu(smoothed), max_size=cfg.min_size - 1
-    )
+    foreground = remove_small_objects(smoothed > level, max_size=cfg.min_size - 1)
     if not foreground.any():
         return np.zeros(block.shape, dtype=LABEL_DTYPE)
 
