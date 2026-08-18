@@ -1,26 +1,26 @@
 # Exatidão contra ground truth — BBBC039 (§13.5)
 
-Gerado em 2026-08-18T21:24:51+00:00 por `scripts/accuracy_bbbc039.py`.
+Gerado em 2026-08-18T22:03:28+00:00 por `scripts/accuracy_bbbc039.py`.
 Split **test** (50 campos), backend clássico, campo inteiro num bloco.
 
-**F1 médio em IoU 0,50:0,95 = 0.698**
-· F1@0,50 = 0.845
-· F1@0,75 = 0.756
+**F1 médio em IoU 0,50:0,95 = 0.767**
+· F1@0,50 = 0.897
+· F1@0,75 = 0.838
 
-Núcleos: **5208 previstos** contra **4727 anotados** (110.2%).
+Núcleos: **4632 previstos** contra **4727 anotados** (98.0%).
 
 | IoU | TP | FP | FN | precisão | recall | F1 | IoU médio dos pares |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 0.50 | 4197 | 1011 | 530 | 0.806 | 0.888 | **0.845** | 0.886 |
-| 0.55 | 4052 | 1156 | 675 | 0.778 | 0.857 | **0.816** | 0.899 |
-| 0.60 | 3974 | 1234 | 753 | 0.763 | 0.841 | **0.800** | 0.905 |
-| 0.65 | 3915 | 1293 | 812 | 0.752 | 0.828 | **0.788** | 0.909 |
-| 0.70 | 3841 | 1367 | 886 | 0.738 | 0.813 | **0.773** | 0.914 |
-| 0.75 | 3754 | 1454 | 973 | 0.721 | 0.794 | **0.756** | 0.919 |
-| 0.80 | 3596 | 1612 | 1131 | 0.690 | 0.761 | **0.724** | 0.925 |
-| 0.85 | 3333 | 1875 | 1394 | 0.640 | 0.705 | **0.671** | 0.933 |
-| 0.90 | 2722 | 2486 | 2005 | 0.523 | 0.576 | **0.548** | 0.946 |
-| 0.95 | 1305 | 3903 | 3422 | 0.251 | 0.276 | **0.263** | 0.969 |
+| 0.50 | 4199 | 433 | 528 | 0.907 | 0.888 | **0.897** | 0.900 |
+| 0.55 | 4142 | 490 | 585 | 0.894 | 0.876 | **0.885** | 0.905 |
+| 0.60 | 4107 | 525 | 620 | 0.887 | 0.869 | **0.878** | 0.908 |
+| 0.65 | 4065 | 567 | 662 | 0.878 | 0.860 | **0.869** | 0.911 |
+| 0.70 | 4004 | 628 | 723 | 0.864 | 0.847 | **0.856** | 0.915 |
+| 0.75 | 3922 | 710 | 805 | 0.847 | 0.830 | **0.838** | 0.919 |
+| 0.80 | 3764 | 868 | 963 | 0.813 | 0.796 | **0.804** | 0.925 |
+| 0.85 | 3492 | 1140 | 1235 | 0.754 | 0.739 | **0.746** | 0.933 |
+| 0.90 | 2862 | 1770 | 1865 | 0.618 | 0.605 | **0.612** | 0.946 |
+| 0.95 | 1343 | 3289 | 3384 | 0.290 | 0.284 | **0.287** | 0.969 |
 
 ## Como ler isto
 
@@ -40,23 +40,21 @@ sobre a composição do conjunto.
 
 ## O que estes números dizem
 
-**Prevemos 5208 núcleos onde há 4727 — 110.2%.** O pipeline
+**Prevemos 4632 núcleos onde há 4727 — 98.0%.** O pipeline
 sobre-segmenta. Com recall de 0.888 a IoU 0,50 encontra quase tudo o que lá
-está; com precisão de 0.806, cerca de um quinto do que reporta não
+está; com precisão de 0.907, cerca de um quinto do que reporta não
 corresponde a nenhum núcleo anotado. O suspeito é o `min_distance`, que semeia o watershed:
 foi a constante que o teste de mutação do lote dourado mostrou ser a mais sensível, e
 semear duas vezes dentro de um núcleo parte-o em dois.
 
-**Não afinei isto.** A medição acima é sobre o split **test**, e ajustar parâmetros contra
-o conjunto de teste é como um número deixa de significar o que diz. O caminho honesto existe
-e está aberto: afinar contra o split **validation**, que é para isso que o BBBC039 o publica,
-voltar a medir no test uma vez, e recongelar o lote dourado no mesmo commit — porque mudar
-o `min_distance` desloca as contagens que o §13.2 guarda.
+**Afinado uma vez, no split de validação.** O `min_distance` passou de 10 para 20, escolhido
+sobre o **validation** e medido aqui sobre o **test** uma única vez (`docs/tuning-bbbc039.md`).
+Antes: F1 médio 0,698, F1@0,50 0,845, 110,2% dos núcleos anotados. A sobre-segmentação
+desapareceu praticamente.
 
-**Contexto.** Um F1@0,50 de 0.845 para um pipeline clássico por afinar é
-razoável e não é estado da arte; a literatura sobre este conjunto põe o CellProfiler na
-mesma ordem e as redes convolucionais claramente acima. É o número que dá sentido a ter dois
-backends, que é precisamente o argumento do §13.5.
+A validação previu +0,080 de F1 médio e o test entregou +0,069. Essa proximidade é o que
+distingue afinar de sobreajustar: se o ganho tivesse evaporado no test, a escolha estaria a
+descrever o ruído do validation.
 
 ## O que a ground truth precisou de descodificação
 

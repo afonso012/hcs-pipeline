@@ -45,7 +45,13 @@ class SegmentationConfig:
     min_size: int = 50
     # Minimum separation between watershed seeds, in pixels. Set below the radius of a
     # nucleus and one nucleus grows two seeds, then gets split down the middle.
-    min_distance: int = 10
+    #
+    # Chosen on BBBC039's **validation** split, once (`docs/tuning-bbbc039.md`). The
+    # previous value of 10 over-segmented by 10%: mean F1 0.674 against 0.754 here, and
+    # 110.6% of the annotated nucleus count against 96.7%. The optimum is bracketed rather
+    # than sitting at the edge of the sweep — 15 scores 0.722 and 30 scores 0.715 — and 25
+    # ties on mean F1 but under-segments by 13%, which is worse for a count.
+    min_distance: int = 20
 
 
 def segment_chunk(

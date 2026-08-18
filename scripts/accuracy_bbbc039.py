@@ -199,16 +199,14 @@ corresponde a nenhum núcleo anotado. O suspeito é o `min_distance`, que semeia
 foi a constante que o teste de mutação do lote dourado mostrou ser a mais sensível, e
 semear duas vezes dentro de um núcleo parte-o em dois.
 
-**Não afinei isto.** A medição acima é sobre o split **test**, e ajustar parâmetros contra
-o conjunto de teste é como um número deixa de significar o que diz. O caminho honesto existe
-e está aberto: afinar contra o split **validation**, que é para isso que o BBBC039 o publica,
-voltar a medir no test uma vez, e recongelar o lote dourado no mesmo commit — porque mudar
-o `min_distance` desloca as contagens que o §13.2 guarda.
+**Afinado uma vez, no split de validação.** O `min_distance` passou de 10 para 20, escolhido
+sobre o **validation** e medido aqui sobre o **test** uma única vez (`docs/tuning-bbbc039.md`).
+Antes: F1 médio 0,698, F1@0,50 0,845, 110,2% dos núcleos anotados. A sobre-segmentação
+desapareceu praticamente.
 
-**Contexto.** Um F1@0,50 de {at.get(0.5, 0):.3f} para um pipeline clássico por afinar é
-razoável e não é estado da arte; a literatura sobre este conjunto põe o CellProfiler na
-mesma ordem e as redes convolucionais claramente acima. É o número que dá sentido a ter dois
-backends, que é precisamente o argumento do §13.5.
+A validação previu +0,080 de F1 médio e o test entregou +0,069. Essa proximidade é o que
+distingue afinar de sobreajustar: se o ganho tivesse evaporado no test, a escolha estaria a
+descrever o ruído do validation.
 
 ## O que a ground truth precisou de descodificação
 

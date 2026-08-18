@@ -84,7 +84,10 @@ class TestChunking:
             for chunk in (256, 1024)
         ]
 
-        assert counts[0] > 1000  # it found real tissue, not an artefact
+        # A sanity bound, not a target: it says the reader found tissue rather than
+        # noise. The exact count follows `min_distance`, which is tuned against BBBC039
+        # (§13.5), so pinning it here would make an unrelated file fail on a tuning change.
+        assert counts[0] > 500
         assert abs(counts[0] - counts[1]) / max(counts) < 0.01
 
 
