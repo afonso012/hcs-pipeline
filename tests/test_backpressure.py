@@ -14,7 +14,7 @@ import redis
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
-from hcs.config import Settings, get_settings
+from hcs.config import Settings
 from hcs.db import Run, UnitRun
 from hcs.services.queue import (
     DEFAULT_QUEUE,
@@ -60,10 +60,10 @@ class TestTheBlockPolicy:
     def test_past_the_end_there_is_nothing_left(self) -> None:
         assert list(next_block(UNITS, 10, MARKS, depth=0)) == []
 
-    def test_the_two_marks_leave_room_between_them(self) -> None:
+    def test_the_two_marks_leave_room_between_them(self, redis_url: str) -> None:
         """Hysteresis, asserted rather than assumed. Equal marks make the dispatcher
         oscillate: publish, cross, stop, drain by one, publish again."""
-        marks = watermarks(get_settings())
+        marks = watermarks(_settings(redis_url, high=50_000))
 
         assert marks.low < marks.high
         assert marks.block <= marks.high - marks.low
@@ -137,7 +137,7 @@ class TestTheAcceptanceTest:
             monkeypatch.setattr(
                 api_client.app.state,
                 "settings",
-                get_settings().model_copy(update={"queue_high_watermark": 10}),
+                api_client.app.state.settings.model_copy(update={"queue_high_watermark": 10}),
             )
 
             response = api_client.post(f"/v1/batches/{batch_id}/submit")
@@ -185,5 +185,17 @@ class TestDepth:
 
 
 def _settings(redis_url: str, high: int) -> Settings:
-    base = get_settings()
-    return base.model_copy(update={"redis_url": redis_url, "queue_high_watermark": high})
+    """Built here rather than read from the environment.
+
+    `get_settings()` needs every credential to be present, which a developer machine
+    supplies through `.env` and CI does not. A test that only passes where somebody has
+    already configured the system is a test that reports on the machine.
+    """
+    return Settings(
+        database_url="postgresql+psycopg://unused/unused",
+        redis_url=redis_url,
+        s3_endpoint_url="http://unused",
+        s3_access_key="unused",
+        s3_secret_key="unused",
+        queue_high_watermark=high,
+    )
