@@ -25,9 +25,20 @@ dependencies = [
 [project.optional-dependencies]
 # Fase 2+. Separado para o contentor da API não arrastar o stack de imagem.
 imaging = [
-    "dask[array]>=2024.10",
-    "bioio>=1.1",
-    "bioio-ome-tiff>=1.0",
+    # No dask and no bioio, and both absences are decisions rather than omissions.
+    #
+    # `dask.array.map_overlap` was the plan (§8.1). It adds a halo, applies a function and
+    # trims the halo off the result — but this pipeline's block function returns rows, not
+    # an array, so there is nothing to trim and all that remains is halo arithmetic that
+    # `core_regions` already owns. See hcs/imaging/pipeline.py.
+    #
+    # `bioio` reads OME-TIFF. BBBC021 is plain striped TIFF, three rows to a strip and
+    # uncompressed, which `tifffile` reads directly; the OME layer would sit between this
+    # code and the bytes without adding anything. Slides go through OpenSlide instead.
+    #
+    # Both are one line to bring back. Carrying them meanwhile is not free: an unused
+    # entry in the lockfile still gets scanned, and CVE-2026-54284 turned a dependency
+    # nothing imports into a red build.
     "tifffile>=2024.9",
     "openslide-python>=1.4",
     # The dylib openslide-python binds to. The worker container gets it from apt
