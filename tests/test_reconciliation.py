@@ -25,7 +25,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from hcs.db import UnitRun, UnitStatus
-from hcs.worker.tasks import reconcile
+from hcs.worker.tasks import reconcile_stuck_units
 from tests.test_api_batches import create_batch, field, manifest
 
 pytestmark = pytest.mark.integration
@@ -70,7 +70,7 @@ class TestWhatItReclaims:
         """The chaos test's broken invariant, as a unit test."""
         work_unit_id, _ = stranded(clean_db, age_seconds=7200)
 
-        outcome = reconcile(older_than_seconds=3600)
+        outcome = reconcile_stuck_units(older_than_seconds=3600)
 
         assert outcome["reclaimed"] == 1
         # Eager mode runs the republished task inline, so it comes back already finished.
@@ -84,7 +84,7 @@ class TestWhatItReclaims:
         idempotency, and twice the cost while the throughput metric lies about it."""
         work_unit_id, _ = stranded(clean_db, age_seconds=5)
 
-        outcome = reconcile(older_than_seconds=3600)
+        outcome = reconcile_stuck_units(older_than_seconds=3600)
 
         assert outcome["reclaimed"] == 0
         assert status_of(clean_db, work_unit_id) is UnitStatus.PROCESSING
@@ -93,7 +93,7 @@ class TestWhatItReclaims:
         """The sweep looks only at PROCESSING. A DONE unit re-enqueued would be harmless
         and pointless, and `_claim` would refuse it anyway — but the query should not have
         found it in the first place."""
-        outcome = reconcile(older_than_seconds=0)
+        outcome = reconcile_stuck_units(older_than_seconds=0)
 
         assert outcome["reclaimed"] == 0
 
@@ -105,11 +105,11 @@ class TestItIsSafeToRepeat:
         sweep would queue the same unit again."""
         stranded(clean_db, age_seconds=7200)
 
-        first = reconcile(older_than_seconds=3600)
-        second = reconcile(older_than_seconds=3600)
+        first = reconcile_stuck_units(older_than_seconds=3600)
+        second = reconcile_stuck_units(older_than_seconds=3600)
 
         assert (first["reclaimed"], second["reclaimed"]) == (1, 0)
 
     def test_an_idle_system_reclaims_nothing(self, clean_db: Engine) -> None:
         """The ordinary case, and the one that runs every two minutes forever."""
-        assert reconcile(older_than_seconds=3600)["reclaimed"] == 0
+        assert reconcile_stuck_units(older_than_seconds=3600)["reclaimed"] == 0

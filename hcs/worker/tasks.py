@@ -443,6 +443,16 @@ def dispatch_run(self: Any, run_id: str, batch_id: str, offset: int = 0) -> str:
 
 @celery_app.task(name="hcs.reconcile")
 def reconcile(older_than_seconds: int | None = None) -> dict[str, Any]:
+    """The scheduled entry point. The work is in `reconcile_stuck_units`.
+
+    Split for the same reason `perform` is split from `process_unit`: a Celery task called
+    outside a worker has no request to push, so testing the rule through the task tests
+    Celery's plumbing and fails in CI for reasons that have nothing to do with §16.4.
+    """
+    return reconcile_stuck_units(older_than_seconds)
+
+
+def reconcile_stuck_units(older_than_seconds: int | None = None) -> dict[str, Any]:
     """Re-enqueue units a dead worker left claimed (§16.4).
 
     > Um job periódico procura unidades em `PROCESSING` há mais tempo que
