@@ -6,7 +6,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate smoke logs ps test lint format check build-context storage \
-        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control load bench chaos accuracy golden golden-freeze
+        data-bbbc039 data-wsi seed seed-dry seed-slides spike negative-control load bench chaos accuracy scale golden golden-freeze
 
 # Compose v5 routes builds through buildx bake, which puts the build-context path into a
 # gRPC header that rejects non-ASCII bytes. This repository lives under "Células", so
@@ -146,6 +146,9 @@ load: ## Run the Locust load profiles (PROFILE=Burst|Sustained, USERS=, TIME=)
 # test the fixture rather than the recovery.
 chaos: ## Kill workers mid-run and check the §16 invariants (BATCH_ID=... required)
 	uv run python scripts/chaos_test.py --batch-id "$(BATCH_ID)" --kill $(or $(KILL),1)
+
+scale: ## Measure throughput against worker count (BATCH_ID=... required)
+	uv run python scripts/scalability.py --batch-id "$(BATCH_ID)" --workers $(or $(WORKERS),1,2,4)
 
 accuracy: ## Score segmentation against BBBC039 annotation (§13.5)
 	uv run python scripts/accuracy_bbbc039.py --root "$(BBBC039_ROOT)" --split $(or $(SPLIT),test)

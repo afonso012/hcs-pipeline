@@ -16,7 +16,7 @@ que ninguém tentou reprovar.
 | C | Zero duplicados em `(work_unit_id, run_id, label)` após caos | ✅ passa | 0 duplicados após SIGKILL. `docs/chaos.md` |
 | C | Zero unidades presas em `PROCESSING` 5 min após o fim | ✅ passa | 0 presas, 480/480, run `COMPLETED`, com paciência de 300 s. `docs/chaos.md` |
 | C | `celery_task_retries_total{error_class="PERMANENT"} == 0` | ✅ passa | 0 falhas permanentes com `attempts > 1` |
-| D-workers | Escalabilidade ≥ 3,2× de 1 para 4 workers | ⚠️ **por medir** | O Locust existe; falta correr `--scale worker=1,2,4` |
+| D-workers | Escalabilidade ≥ 3,2× de 1 para 4 workers | ❌ **falha** | 1,02× a 2 workers, **0,70×** a 4. E o débito por worker caiu ~4× face à Fase 2 |
 | E | Painéis respondem "onde está o estrangulamento?" sem entrar em contentores | ⚠️ parcial | Painéis 1–4 com dados; 5 e 6 vazios até às Fases 7 e 6 |
 | F | IoU e F1 medidos para **ambos** os backends no BBBC039 | ⚠️ parcial | Clássico: F1@0,50 = 0,845, média 0,50:0,95 = 0,698. Cellpose é Fase 7 |
 | G | Reprocessar com a mesma linhagem dá resultado idêntico | ✅ passa | `make golden`: 3556 células em 56 campos, 8 doses dentro de 2% |
@@ -41,9 +41,17 @@ hora, e o §22 pede zero unidades presas cinco minutos depois — nenhum tempori
 os dois. A varredura pergunta agora aos workers o que estão a executar, e reclama o que
 ninguém tem em mãos.
 
-**A escalabilidade não foi medida.** O perfil do Locust está escrito e nunca correu contra
-`--scale worker=1,2,4`. É a única linha aqui que falha por não ter sido tentada, e por isso
-é a mais barata de resolver.
+**A escalabilidade é plana e depois negativa.** 1,97 u/s com um worker, 2,00 com dois, 1,37
+com quatro. Não é sub-linear, é ausente — e a 4 workers há contenção suficiente para tornar
+a frota mais lenta do que um worker sozinho.
+
+Há aqui um segundo facto que importa mais: na Fase 2 o mesmo lote de 480 unidades levava
+**61 segundos com 2 workers**, ou 7,9 u/s. Agora são 240 s e 2,0 u/s. O débito por worker
+caiu cerca de quatro vezes, e isso é uma regressão introduzida entre as duas medições — não
+uma propriedade da máquina. Os suspeitos estão todos na Fase 4: o dispatcher por blocos, a
+varredura de reconciliação a fazer `inspect active` de dois em dois minutos, e o contentor
+`beat`. Diagnosticar isso vem antes de voltar a falar de escalabilidade, porque medir a
+curva de um sistema quatro vezes mais lento do que devia ser mede a regressão e não a curva.
 
 ## Uma nota sobre o que os critérios não dizem
 
