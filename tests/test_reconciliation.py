@@ -110,6 +110,10 @@ class TestItIsSafeToRepeat:
 
         assert (first["reclaimed"], second["reclaimed"]) == (1, 0)
 
-    def test_an_idle_system_reclaims_nothing(self, clean_db: Engine) -> None:
-        """The ordinary case, and the one that runs every two minutes forever."""
+    def test_an_idle_system_reclaims_nothing(self, api_client: Any, clean_db: Engine) -> None:
+        """The ordinary case, and the one that runs every two minutes forever.
+
+        Takes `api_client` for the environment it configures, not for the client: the sweep
+        reads settings, and CI has no `.env` for `get_settings()` to fall back on.
+        """
         assert reconcile_stuck_units(older_than_seconds=3600)["reclaimed"] == 0
