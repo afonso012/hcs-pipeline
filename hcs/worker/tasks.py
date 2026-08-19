@@ -19,7 +19,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any, cast
 
@@ -34,6 +34,7 @@ from hcs.metrics import (
     CELLS_DETECTED,
     DLQ,
     QC_REJECTED,
+    RECONCILED,
     TASK_DURATION,
     TASK_RETRIES,
     UNIT_BYTES,
@@ -60,6 +61,9 @@ MAX_STORED_ERROR_CHARS = 2000
 # draining queue is refilled promptly, long enough that a full one is not polled in a
 # tight loop.
 DISPATCH_RETRY_SECONDS = 5
+
+# How long to wait for workers to answer an `inspect active` broadcast.
+INSPECT_TIMEOUT_SECONDS = 5
 
 # Port the worker exposes its metrics on. Celery is not an HTTP server, so the process
 # starts a tiny one of its own; `--concurrency=1` is what makes that safe, because a
@@ -435,3 +439,121 @@ def dispatch_run(self: Any, run_id: str, batch_id: str, offset: int = 0) -> str:
 
     logger.info("run %s fully dispatched: %d units", run_id, len(unit_ids))
     return f"dispatched {len(unit_ids)}/{len(unit_ids)}"
+
+
+@celery_app.task(name="hcs.reconcile")
+def reconcile(older_than_seconds: int | None = None) -> dict[str, Any]:
+    """Re-enqueue units a dead worker left claimed (§16.4).
+
+    > Um job periódico procura unidades em `PROCESSING` há mais tempo que
+    > `visibility_timeout` e reenfileira-as.
+
+    This is the safety net that makes Redis acceptable as a broker (ADR-001). Redis has no
+    durable queues: a worker killed between claiming a unit and acknowledging it leaves the
+    task somewhere between the broker's redelivery timer and nowhere. Postgres is the source
+    of truth and the queue is only transport, so the truth is where the recovery starts.
+
+    The chaos test of §13.4 is what made this non-optional rather than nice to have. Killing
+    one worker left a unit in PROCESSING and the run never closed — 479 of 480 — because
+    recovery otherwise waits for a `visibility_timeout` set to an hour.
+
+    **The cutoff is "nobody is running it", not "the broker gave up".** §16.4 says to wait
+    out `visibility_timeout`, and taken literally that is an hour — while §22 asks for zero
+    stuck units five minutes after a run ends. The two cannot both be satisfied by a timer,
+    and the chaos test showed it: with an hour-long cutoff the sweep correctly declined to
+    touch a unit that had been dead for fifteen minutes.
+
+    So the sweep asks the workers what they are actually executing. A unit that is
+    PROCESSING and that no live worker holds is not being worked on, whatever any timer
+    says. The broker's timeout stays as the backstop for the case where the workers cannot
+    be reached at all.
+
+    **The grace period is still needed**, and is short. There is a window between `_claim`
+    committing PROCESSING and the task appearing in a worker's active list; reclaiming
+    inside it would put two workers on the same field. Idempotency (§16.2) keeps that
+    correct, but it doubles the cost and makes the throughput metric lie.
+
+    Returns what it did, so a scheduled job that quietly reconciles thousands of units a day
+    is visible rather than merely effective.
+    """
+    settings = get_settings()
+    grace = older_than_seconds if older_than_seconds is not None else settings.reconcile_grace
+    cutoff = datetime.now(UTC) - timedelta(seconds=grace)
+    running = _units_in_flight()
+
+    with session_scope() as session:
+        candidates = session.execute(
+            select(UnitRun.work_unit_id, UnitRun.run_id)
+            .where(UnitRun.status == UnitStatus.PROCESSING, UnitRun.started_at < cutoff)
+            .with_for_update(skip_locked=True)
+        ).all()
+        # `None` means the workers could not be reached; falling back to the broker's
+        # timeout is the conservative answer, because reclaiming everything on the strength
+        # of a failed inspect would re-run a whole live fleet's work.
+        stuck = (
+            [row for row in candidates if (str(row[0]), str(row[1])) not in running]
+            if running is not None
+            else [
+                row
+                for row in candidates
+                if row is not None and _older_than(session, row, settings.visibility_timeout)
+            ]
+        )
+
+        for work_unit_id, run_id in stuck:
+            # Back to PENDING before republishing, because `_claim` only accepts PENDING or
+            # PROCESSING — and leaving it PROCESSING would let two sweeps queue it twice.
+            session.execute(
+                update(UnitRun)
+                .where(UnitRun.work_unit_id == work_unit_id, UnitRun.run_id == run_id)
+                .values(status=UnitStatus.PENDING, last_error="reclaimed by reconciliation")
+            )
+        session.commit()
+
+    for work_unit_id, run_id in stuck:
+        process_unit.delay(str(work_unit_id), str(run_id))
+        RECONCILED.inc()
+
+    if stuck:
+        logger.warning("reconciliation re-enqueued %d stuck unit(s)", len(stuck))
+    return {
+        "reclaimed": len(stuck),
+        "examined": len(candidates),
+        "workers_answered": running is not None,
+    }
+
+
+def _units_in_flight() -> set[tuple[str, str]] | None:
+    """What the workers say they are executing right now, or `None` if none answered.
+
+    `inspect active` is a broadcast with a timeout: every live worker replies with the tasks
+    it holds. That is a far better definition of "in progress" than elapsed time, because a
+    worker that died is not in a position to reply on behalf of the unit it was holding.
+
+    `None` and "nobody is running anything" are deliberately different answers. An empty
+    fleet legitimately runs nothing; an unreachable fleet knows nothing, and treating the
+    second as the first would reclaim every unit in flight.
+    """
+    try:
+        active = celery_app.control.inspect(timeout=INSPECT_TIMEOUT_SECONDS).active()
+    except Exception as exc:  # a broker that is down is not a reason to crash the sweep
+        logger.warning("could not inspect workers: %s", exc)
+        return None
+    if not active:
+        return None
+
+    running: set[tuple[str, str]] = set()
+    for tasks in active.values():
+        for task in tasks or []:
+            args = task.get("args") or []
+            if len(args) >= 2:
+                running.add((str(args[0]), str(args[1])))
+    return running
+
+
+def _older_than(session: Session, row: Any, seconds: int) -> bool:
+    """Fallback path: the broker's timeout, used only when the fleet did not answer."""
+    started = session.scalar(
+        select(UnitRun.started_at).where(UnitRun.work_unit_id == row[0], UnitRun.run_id == row[1])
+    )
+    return started is not None and started < datetime.now(UTC) - timedelta(seconds=seconds)

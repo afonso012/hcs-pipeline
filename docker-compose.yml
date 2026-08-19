@@ -93,6 +93,38 @@ services:
 
   # Creates the buckets and exits. Everything that needs object storage waits for this to
   # succeed, so /readyz never reports "bucket does not exist" as a startup blip.
+  # Celery's scheduler, on its own and deliberately singular. It fires the §16.4
+  # reconciliation sweep; two of them would reconcile the same stuck units twice and race
+  # each other, so this never scales past one replica.
+  beat:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    profiles: [core, obs, science, full]
+    # The schedule file goes to /tmp: /app is root-owned and the image runs as 10001, so
+    # beat's default of writing `celerybeat-schedule` beside the code is a permission error
+    # at startup.
+    command:
+      - celery
+      - -A
+      - hcs.worker.celery_app
+      - beat
+      - --loglevel=INFO
+      - --schedule=/tmp/celerybeat-schedule
+    environment:
+      <<: [*postgres-url, *storage-env]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 256m
+    restart: unless-stopped
+
   minio-init:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     profiles: [core, obs, science, full]

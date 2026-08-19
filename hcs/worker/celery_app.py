@@ -21,6 +21,7 @@ from hcs.config import get_settings
 
 TASK_TIME_LIMIT_SECONDS = 1800  # hard kill
 TASK_SOFT_TIME_LIMIT_SECONDS = 1500  # catchable, leaves room to clean up
+RECONCILE_INTERVAL_SECONDS = 120
 VISIBILITY_TIMEOUT_SECONDS = 3600  # > TASK_TIME_LIMIT_SECONDS, see the module docstring
 
 celery_app = Celery("hcs")
@@ -52,6 +53,17 @@ celery_app.conf.update(
     task_time_limit=TASK_TIME_LIMIT_SECONDS,
     task_soft_time_limit=TASK_SOFT_TIME_LIMIT_SECONDS,
     broker_transport_options={"visibility_timeout": VISIBILITY_TIMEOUT_SECONDS},
+    # §16.4's safety net, on a schedule. Without this the sweep is code nobody invokes, and
+    # the chaos test's stuck unit stays stuck for the full visibility timeout — an hour.
+    #
+    # `beat` runs in its own container rather than in a worker: two workers each running a
+    # scheduler would reconcile twice, and the sweep would race itself.
+    beat_schedule={
+        "reconcile-stuck-units": {
+            "task": "hcs.reconcile",
+            "schedule": float(RECONCILE_INTERVAL_SECONDS),
+        }
+    },
     # Progress is read from `unit_runs` in Postgres, the source of truth (ADR-001).
     # A result backend would be a second, weaker copy of the same state.
     result_backend=None,

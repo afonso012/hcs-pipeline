@@ -62,6 +62,11 @@ TASK_RETRIES: Final = Counter(
 
 DLQ: Final = Counter("celery_dlq_total", "Units that exhausted their retries.")
 
+RECONCILED: Final = Counter(
+    "celery_reconciled_total",
+    "Units re-enqueued by the §16.4 sweep after a worker died holding them.",
+)
+
 # --- the worker: the metrics that prove Objective B (§14.2 panels 2 and 3) --------------
 
 WORKER_RSS: Final = Gauge(

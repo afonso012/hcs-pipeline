@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     queue_high_watermark: int = 50_000
     queue_low_watermark: int = 5_000
     dispatch_block_size: int = 500
+    # Must match the broker's `visibility_timeout` (see celery_app). The reconciliation
+    # sweep of §16.4 only reclaims units older than this: anything younger is being worked
+    # on, and re-enqueuing it would put two workers on the same field.
+    visibility_timeout: int = 3600
+    # How often the sweep runs. Frequent enough that a killed worker costs minutes rather
+    # than the hour the broker would otherwise take, cheap enough to be a partial-index scan.
+    reconcile_interval: int = 120
+    # How long a unit must have been PROCESSING before the sweep will consider it at all.
+    # Short, because the real test is whether a worker is running it; this only covers the
+    # window between the claim committing and the task appearing in a worker's active list.
+    reconcile_grace: int = 60
 
     # --- lineage (§12) ---
     pipeline_version: str = "classic-0.0.1"

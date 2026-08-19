@@ -1,14 +1,14 @@
 # Teste de caos — §13.4
 
-Gerado em 2026-08-18T21:41:10+00:00 por `scripts/chaos_test.py`.
-Run `3989ad43-9138-41e1-9230-01630402f430`, 1 worker(s) mortos com SIGKILL 8s após o
+Gerado em 2026-08-19T10:10:40+00:00 por `scripts/chaos_test.py`.
+Run `aca3c0d0-156c-4213-8ded-25023a471a58`, 1 worker(s) mortos com SIGKILL 8s após o
 arranque: hcs-worker-1. Reiniciados: hcs-worker-1.
 
 | | invariante | observado |
 |---|---|---|
-| ✅ | no duplicate rows for (work_unit_id, run_id) | 0 duplicated unit(s); statuses {'PROCESSING': 1, 'DONE': 479} |
-| ❌ | processed + failed == total | 479 + 0 = 479 against 480, run QUEUED |
-| ❌ | nothing left stuck in PROCESSING | 1 unit(s) still claimed by a worker that is gone |
+| ✅ | no duplicate rows for (work_unit_id, run_id) | 0 duplicated unit(s); statuses {'DONE': 480} |
+| ✅ | processed + failed == total | 480 + 0 = 480 against 480, run COMPLETED |
+| ✅ | nothing left stuck in PROCESSING | 0 unit(s) still claimed by a worker that is gone |
 | ✅ | permanent failures were not retried | 0 permanent failure(s) with attempts > 1 |
 
 ## Porque é SIGKILL
@@ -24,4 +24,4 @@ invariante das linhas duplicadas é onde se veria se não fosse.
 
 ## Veredicto
 
-**Não aguentam.** Ver a tabela: uma invariante que falha aqui é uma afirmação do §16 que não se sustenta.
+**Aguentam.** Matar workers a meio da corrida não deixou unidades presas, não duplicou linhas, e a contabilidade do run fecha.

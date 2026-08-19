@@ -14,7 +14,7 @@ que ninguém tentou reprovar.
 | B-HCS | RSS agregado cresce linearmente com o nº de workers | ✅ passa | 243 → 509 → 1020 MiB a 1, 2 e 4 processos. `docs/spike-memory.md` |
 | B-HCS | RSS por worker independente da profundidade da fila | ✅ passa | 320 MiB por processo com a fila a 474 e a 0 |
 | C | Zero duplicados em `(work_unit_id, run_id, label)` após caos | ✅ passa | 0 duplicados após SIGKILL. `docs/chaos.md` |
-| C | Zero unidades presas em `PROCESSING` 5 min após o fim | ❌ **falha** | 1 unidade presa após 900 s. Falta a varredura do §16.4 (Fase 5) |
+| C | Zero unidades presas em `PROCESSING` 5 min após o fim | ✅ passa | 0 presas, 480/480, run `COMPLETED`, com paciência de 300 s. `docs/chaos.md` |
 | C | `celery_task_retries_total{error_class="PERMANENT"} == 0` | ✅ passa | 0 falhas permanentes com `attempts > 1` |
 | D-workers | Escalabilidade ≥ 3,2× de 1 para 4 workers | ⚠️ **por medir** | O Locust existe; falta correr `--scale worker=1,2,4` |
 | E | Painéis respondem "onde está o estrangulamento?" sem entrar em contentores | ⚠️ parcial | Painéis 1–4 com dados; 5 e 6 vazios até às Fases 7 e 6 |
@@ -34,10 +34,12 @@ tabelas, a ~2,1 ms. Não é a máquina, é o desenho. Saídas: ingestão assínc
 de `INSERT`, ou corrigir o critério para um número medido. As duas primeiras são trabalho, a
 terceira é uma decisão sobre o que o projeto promete.
 
-**Uma unidade fica presa em `PROCESSING` quando o worker morre.** A recuperação depende hoje
-do `visibility_timeout` do Redis, que está a uma hora. A varredura de reconciliação do §16.4
-é o que devia apanhá-la e ainda não existe — é Fase 5, e o teste de caos é a medição que diz
-porque não é opcional.
+**~~Uma unidade fica presa em `PROCESSING`~~ — resolvido.** A varredura do §16.4 existe e o
+teste de caos passa as quatro invariantes com 300 s de paciência. O caminho até lá corrigiu
+uma contradição na especificação: o §16.4 manda esperar o `visibility_timeout`, que é uma
+hora, e o §22 pede zero unidades presas cinco minutos depois — nenhum temporizador satisfaz
+os dois. A varredura pergunta agora aos workers o que estão a executar, e reclama o que
+ninguém tem em mãos.
 
 **A escalabilidade não foi medida.** O perfil do Locust está escrito e nunca correu contra
 `--scale worker=1,2,4`. É a única linha aqui que falha por não ter sido tentada, e por isso
